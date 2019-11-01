@@ -74,14 +74,13 @@ static void positionEstimateInternal(state_t* estimate, const sensorData_t* sens
   }
 
   if (surfaceFollowingMode) {
-    if (sensorData->zrange.timestamp == tick) {
-      // IIR filter zrange
-      filteredZ = (state->estAlphaZrange       ) * state->estimatedZ +
-                  (1.0f - state->estAlphaZrange) * sensorData->zrange.distance;
-      // Use zrange as base and add velocity changes.
-      state->estimatedZ = filteredZ + (state->velocityFactor * state->velocityZ * dt);
-    }
-  } else {
+    // IIR filter zrange
+    filteredZ = (state->estAlphaZrange       ) * state->estimatedZ +
+                (1.0f - state->estAlphaZrange) * sensorData->zrange.distance;
+    // Use zrange as base and add velocity changes.
+    state->estimatedZ = filteredZ + (state->velocityFactor * state->velocityZ * dt);
+  } 
+  else {
     // FIXME: A bit of an hack to init IIR filter
     if (state->estimatedZ == 0.0f) {
       filteredZ = sensorData->baro.asl;
@@ -94,9 +93,9 @@ static void positionEstimateInternal(state_t* estimate, const sensorData_t* sens
     state->estimatedZ = filteredZ + (state->velocityFactor * state->velocityZ * dt);
   }
 
-
-  estimate->position.x = 0.0f;
-  estimate->position.y = 0.0f;
+  // Don't want to reset x and y position here
+  //estimate->position.x = 0.0f;
+  //estimate->position.y = 0.0f;
   estimate->position.z = state->estimatedZ;
   estimate->velocity.z = (state->estimatedZ - prev_estimatedZ) / dt;
   state->estimatedVZ = estimate->velocity.z;
