@@ -5,6 +5,7 @@
 #include "estimator.h"
 #include "estimator_complementary.h"
 #include "estimator_kalman.h"
+#include "estimator_movinghorizon.h"
 
 #define DEFAULT_ESTIMATOR complementaryEstimator
 static StateEstimatorType currentEstimator = anyEstimator;
@@ -70,7 +71,20 @@ static EstimatorFcns estimatorFunctions[] = {
     .estimatorEnqueueAbsoluteHeight = estimatorKalmanEnqueueAbsoluteHeight,
     .estimatorEnqueueFlow = estimatorKalmanEnqueueFlow,
     .estimatorEnqueueYawError = estimatorKalmanEnqueueYawError,
-    },
+  },
+  { .init = estimatorMovingHorizonInit,
+    .test = estimatorMovingHorizonTest,
+    .update = estimatorMovingHorizon,
+    .name = "MovingHorizon",
+    .estimatorEnqueueTDOA = estimatorMovingHorizonEnqueueTDOA,
+    .estimatorEnqueuePosition = NOT_IMPLEMENTED,
+    .estimatorEnqueuePose = NOT_IMPLEMENTED,
+    .estimatorEnqueueDistance = NOT_IMPLEMENTED,
+    .estimatorEnqueueTOF = NOT_IMPLEMENTED,
+    .estimatorEnqueueAbsoluteHeight = NOT_IMPLEMENTED,
+    .estimatorEnqueueFlow = NOT_IMPLEMENTED,
+    .estimatorEnqueueYawError = NOT_IMPLEMENTED,
+  }, // Any estimator
 };
 
 
