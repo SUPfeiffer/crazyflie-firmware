@@ -44,14 +44,7 @@ static inline bool stateEstimatorHasTDOAPacket(tdoaMeasurement_t *uwb) {
 #define CONST_G 9.81f
 #define CONST_K_AERO 0.35f
 
-struct stateWindow_s {
-    float x[MOVING_HORIZON_MAX_WINDOW_SIZE];
-    float y[MOVING_HORIZON_MAX_WINDOW_SIZE];
-    float vx[MOVING_HORIZON_MAX_WINDOW_SIZE];
-    float vy[MOVING_HORIZON_MAX_WINDOW_SIZE];
-};
-
-// shift window by one step
+// shift variables in the window by one step
 void movingHorizonShiftWindow(float *window[], int windowSize);
 
 // for position correction with any number of tdoa measurements (less accurate)
@@ -77,16 +70,13 @@ velocity_t vel_prediction ={
     .z = 0.0f,
 };
 
-struct stateWindow_s delta ={
-    .x = {0.0f},
-    .y = {0.0f},
-    .vx = {0.0f},
-    .vy = {0.0f},
-};
 
+// variables in moving windows
 float time_w[MOVING_HORIZON_MAX_WINDOW_SIZE] = {0.0f};
 float dt_w[MOVING_HORIZON_MAX_WINDOW_SIZE] = {0.0f};
-
+float dx_w[MOVING_HORIZON_MAX_WINDOW_SIZE] = {0.0f};
+float dy_w[MOVING_HORIZON_MAX_WINDOW_SIZE] = {0.0f};
+ 
 uint8_t windowSize = 0;
 
 float ls_sumDt;
@@ -157,16 +147,16 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         if (positionFromTDOA(loc_prediction,&loc_measurement)){
 
             if (windowSize == MOVING_HORIZON_MAX_WINDOW_SIZE){
-                movingHorizonShiftWindow(delta.x, windowSize);
-                movingHorizonShiftWindow(delta.y, windowSize);
+                movingHorizonShiftWindow(dx_w, windowSize);
+                movingHorizonShiftWindow(dy_w, windowSize);
                 movingHorizonShiftWindow(time_w, windowSize);
             }
             else{ 
                 windowSize += 1;
             }
             
-            delta.x[windowSize] = loc_measurement.x - loc_prediction.x;
-            delta.y[windowSize] = loc_measurement.y - loc_prediction.y;
+            dx_w[windowSize] = loc_measurement.x - loc_prediction.x;
+            dy_w[windowSize] = loc_measurement.y - loc_prediction.y;
             
             // Least Squares (no RANSAC)
             // reset sums
@@ -184,10 +174,10 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
 
                 ls_sumDt += dt_w[i];
                 ls_sumDt2 += powf(dt_w[i],2);
-                ls_sumDx += delta.x[i];
-                ls_sumDtDx += dt_w[i] * delta.x[i];
-                ls_sumDy += delta.y[i];
-                ls_sumDtDy += dt_w[i] * delta.y[i];
+                ls_sumDx += dx_w[i];
+                ls_sumDtDx += dt_w[i] * dx_w[i];
+                ls_sumDy += dy_w[i];
+                ls_sumDtDy += dt_w[i] * dy_w[i];
             }
 
             ls_denom = windowSize * ls_sumDt2 - powf(ls_sumDt,2);
