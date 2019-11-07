@@ -14,6 +14,7 @@
 #include "sensfusion6.h"
 #include "sensors.h"
 #include "position_estimator.h"
+#include "log.h"
 
 #include <math.h>
 #include "math3d.h"
@@ -364,3 +365,15 @@ void linearLeastSquares(float *x, float *y, float N, float *m, float *b){
     *b = (sumX2 * sumY - sumXY * sumX) / denom;
     *m = (N * sumXY - sumX * sumY) / denom;
 }
+
+
+// Log group
+LOG_GROUP_START(mhe)
+    LOG_ADD(LOG_FLOAT, uwbX, &loc_measurement.x)
+    LOG_ADD(LOG_FLOAT, uwbY, &loc_measurement.y)
+    LOG_ADD(LOG_FLOAT, uwbZ, &loc_measurement.z)
+    LOG_ADD(LOG_FLOAT, dx, &errorEst_x)
+    LOG_ADD(LOG_FLOAT, dvx, &errorEst_vx)
+    LOG_ADD(LOG_FLOAT, dy, &errorEst_y)
+    LOG_ADD(LOG_FLOAT, dvy, &errorEst_vy)
+LOG_GROUP_STOP(mhe)
