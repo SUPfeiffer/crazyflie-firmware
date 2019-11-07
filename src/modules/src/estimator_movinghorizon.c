@@ -56,6 +56,9 @@ void projectOnTDOA(tdoaMeasurement_t *tdoa, point_t *original, point_t *projecti
 // for multilateration
 bool positionFromTDOA(point_t prediction, point_t *measurement);
 
+// Solves the least squares problem y=mx+b, where length(x)=length(y)=N
+void linearLeastSquares(float *x, float *y, float N, float *m, float *b);
+
 static bool isInit = false;
 static point_t loc_prediction;
 static point_t loc_measurement;
@@ -167,32 +170,13 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
             dx_w[windowSize] = loc_measurement.x - loc_prediction.x;
             dy_w[windowSize] = loc_measurement.y - loc_prediction.y;
             
-            // Least Squares (no RANSAC)
-            float ls_sumDt = 0.0f;
-            float ls_sumDt2 = 0.0f;
-            float ls_sumDx = 0.0f;
-            float ls_sumDtDx = 0.0f;
-            float ls_sumDy = 0.0f;
-            float ls_sumDtDy = 0.0f;
-            
             uint8_t i;
             for (i=0;i<windowSize;i++){
                 dt_w[i] = time_w[i]-time_w[0]; 
-
-                ls_sumDt += dt_w[i];
-                ls_sumDt2 += powf(dt_w[i],2);
-                ls_sumDx += dx_w[i];
-                ls_sumDtDx += dt_w[i] * dx_w[i];
-                ls_sumDy += dy_w[i];
-                ls_sumDtDy += dt_w[i] * dy_w[i];
             }
 
-            float ls_denom = windowSize * ls_sumDt2 - powf(ls_sumDt,2);
-            
-            errorEst_x = (ls_sumDt2 * ls_sumDx - ls_sumDtDx * ls_sumDt) / ls_denom;
-            errorEst_vx = (windowSize * ls_sumDtDx - ls_sumDt * ls_sumDx) / ls_denom;
-            errorEst_y = (ls_sumDt2 * ls_sumDy - ls_sumDtDy * ls_sumDt) / ls_denom;
-            errorEst_vy = (windowSize * ls_sumDtDy - ls_sumDt * ls_sumDy) / ls_denom;
+            linearLeastSquares(dt_w, dx_w, windowSize, &errorEst_vx, &errorEst_x);
+            linearLeastSquares(dt_w, dy_w, windowSize, &errorEst_vy, &errorEst_y);
         }
         
         // correction of prediction
@@ -358,4 +342,25 @@ bool positionFromTDOA(point_t prediction, point_t *measurement){
     measurement->z = uwb_position[2];
     
     return true;
+}
+
+void linearLeastSquares(float *x, float *y, float N, float *m, float *b){
+    // Linear Least Squares (no RANSAC)
+    float sumX = 0.0f;
+    float sumX2 = 0.0f;
+    float sumY = 0.0f;
+    float sumXY = 0.0f;
+        
+    uint8_t i;
+    for (i=0;i<N;i++){
+        sumX += x[i];
+        sumX2 += powf(x[i],2);
+        sumY += y[i];
+        sumXY += x[i] * y[i];
+    }
+
+    float denom = N * sumX2 - powf(sumX,2);
+    
+    *b = (sumX2 * sumY - sumXY * sumX) / denom;
+    *m = (N * sumXY - sumX * sumY) / denom;
 }
