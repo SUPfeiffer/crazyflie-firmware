@@ -8,6 +8,7 @@
  * 
  * 
  */
+
 #ifndef __ESTIMATOR_MOVINGHORIZON_H__
 #define __ESTIMATOR_MOVINGHORIZON_H__
 
@@ -17,7 +18,7 @@ void estimatorMovingHorizonInit(void);
 bool estimatorMovingHorizonTest(void);
 void estimatorMovingHorizon(state_t *state, sensorData_t *sensors, control_t *control, const uint32_t tick);
 
-bool estimatorMovingHorizonEnqueueTDOA(const tdoaMeasurement_t *uwb)
+bool estimatorMovingHorizonEnqueueTDOA(const tdoaMeasurement_t *uwb);
 
 
 #endif

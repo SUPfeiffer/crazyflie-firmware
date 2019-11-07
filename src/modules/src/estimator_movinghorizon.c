@@ -14,10 +14,12 @@
 #include "sensfusion6.h"
 #include "sensors.h"
 #include "position_estimator.h"
+
 #include <math.h>
 #include "math3d.h"
 #include "cf_math.h"
 
+#include "stm32f4xx.h"
 #include "FreeRTOS.h"
 #include "queue.h"
 #include "task.h"
@@ -33,10 +35,10 @@ static inline bool stateEstimatorHasTDOAPacket(tdoaMeasurement_t *uwb) {
 
 
 #define ATTITUDE_UPDATE_RATE RATE_250_HZ
-#define ATTITUDE_UPDATE_DT 1.0/ATTITUDE_UPDATE_RATE
+#define ATTITUDE_UPDATE_DT 1.0f/ATTITUDE_UPDATE_RATE
 
 #define POS_UPDATE_RATE RATE_100_HZ
-#define POS_UPDATE_DT 1.0/POS_UPDATE_RATE
+#define POS_UPDATE_DT 1.0f/POS_UPDATE_RATE
 
 #define MOVING_HORIZON_MAX_WINDOW_SIZE 10
 #define NEWTON_RAPHSON_THRESHOLD 0.001f
@@ -45,56 +47,63 @@ static inline bool stateEstimatorHasTDOAPacket(tdoaMeasurement_t *uwb) {
 #define CONST_K_AERO 0.35f
 
 // shift variables in the window by one step
-void movingHorizonShiftWindow(float *window[], int windowSize);
+void movingHorizonShiftWindow(float *window, int windowSize);
 
 // for position correction with any number of tdoa measurements (less accurate)
 void projectOnTDOA(tdoaMeasurement_t *tdoa, point_t *original, point_t *projection);
 
 // position calculation with > 3 tdoa measurements (returns false otherwise) using Newton-Raphson
 // for multilateration
-bool positionFromTDOA(point_t prediction, point_t *measurement)
+bool positionFromTDOA(point_t prediction, point_t *measurement);
 
-point_t loc_prediction ={
-    .x = 0.0f,
-    .y = 0.0f,
-    .z = 0.0f,
-};
-point_t loc_measurement ={
-    .x = 0.0f,
-    .y = 0.0f,
-    .z = 0.0f,
-};
-velocity_t vel_prediction ={
-    .x = 0.0f,
-    .y = 0.0f,
-    .z = 0.0f,
-};
-
+static bool isInit = false;
+static point_t loc_prediction;
+static point_t loc_measurement;
+static velocity_t vel_prediction;
 
 // variables in moving windows
-float time_w[MOVING_HORIZON_MAX_WINDOW_SIZE] = {0.0f};
-float dt_w[MOVING_HORIZON_MAX_WINDOW_SIZE] = {0.0f};
-float dx_w[MOVING_HORIZON_MAX_WINDOW_SIZE] = {0.0f};
-float dy_w[MOVING_HORIZON_MAX_WINDOW_SIZE] = {0.0f};
+static float time_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
+static float dt_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
+static float dx_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
+static float dy_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
  
-uint8_t windowSize = 0;
+static uint8_t windowSize;
 
-float ls_sumDt;
-float ls_sumDt2;
-float ls_sumDx;
-float ls_sumDtDx;
-float ls_sumDy;
-float ls_sumDtDy;
-float ls_denom;
-
-float errorEst_x = 0;
-float errorEst_vx = 0;
-float errorEst_y = 0;
-float errorEst_vy = 0;
+// Error estimations
+static float errorEst_x;
+static float errorEst_vx;
+static float errorEst_y;
+static float errorEst_vy;
 
 void estimatorMovingHorizonInit(void)
 {
+    if(!isInit){
+        tdoaDataQueue = xQueueCreate(UWB_QUEUE_LENGTH, sizeof(tdoaMeasurement_t));
+    }
+    else{
+        xQueueReset(tdoaDataQueue);
+    }
+
     sensfusion6Init();
+
+    // reset variables
+    loc_prediction.x = 0.0f; loc_prediction.y = 0.0f; loc_prediction.z = 0.0f;
+    loc_measurement.x = 0.0f; loc_measurement.y = 0.0f; loc_measurement.z = 0.0f;
+    vel_prediction.x = 0.0f; vel_prediction.y = 0.0f; vel_prediction.z = 0.0f;
+    int8_t i;
+    for (i=0;i<MOVING_HORIZON_MAX_WINDOW_SIZE;i++){
+        time_w[i] = 0.0f;
+        dt_w[i] = 0.0f;
+        dx_w[i] = 0.0f;
+        dy_w[i] = 0.0f;
+    }
+    windowSize = 0;
+    errorEst_x = 0.0f;
+    errorEst_vx = 0.0f;
+    errorEst_y = 0.0f;
+    errorEst_vy = 0.0f;
+
+    isInit = true;
 }
 
 bool estimatorMovingHorizonTest(void)
@@ -138,8 +147,8 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         // predict current state
         loc_prediction.x += vel_prediction.x * POS_UPDATE_DT;
         loc_prediction.y += vel_prediction.y * POS_UPDATE_DT;
-        vel_prediction.x += (-CONST_G*tan(state->attitude.pitch) - CONST_K_AERO*vel_prediction.x) * POS_UPDATE_DT;
-        vel_prediction.x += (CONST_G*tan(state->attitude.roll) - CONST_K_AERO*vel_prediction.y) * POS_UPDATE_DT;
+        vel_prediction.x += (-CONST_G*tanf(state->attitude.pitch) - CONST_K_AERO*vel_prediction.x) * POS_UPDATE_DT;
+        vel_prediction.x += (CONST_G*tanf(state->attitude.roll) - CONST_K_AERO*vel_prediction.y) * POS_UPDATE_DT;
 
         time_w[windowSize] = xTaskGetTickCount();
         
@@ -159,17 +168,15 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
             dy_w[windowSize] = loc_measurement.y - loc_prediction.y;
             
             // Least Squares (no RANSAC)
-            // reset sums
-            ls_sumDt = 0.0f;
-            ls_sumDt2 = 0.0f;
-            ls_sumDx = 0.0f;
-            ls_sumDtDx = 0.0f;
-            ls_sumDy = 0.0f;
-            ls_sumDtDy = 0.0f;
+            float ls_sumDt = 0.0f;
+            float ls_sumDt2 = 0.0f;
+            float ls_sumDx = 0.0f;
+            float ls_sumDtDx = 0.0f;
+            float ls_sumDy = 0.0f;
+            float ls_sumDtDy = 0.0f;
             
-            // compute new sums
             uint8_t i;
-            for (i=0;i<windowSize,i++){
+            for (i=0;i<windowSize;i++){
                 dt_w[i] = time_w[i]-time_w[0]; 
 
                 ls_sumDt += dt_w[i];
@@ -180,7 +187,7 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
                 ls_sumDtDy += dt_w[i] * dy_w[i];
             }
 
-            ls_denom = windowSize * ls_sumDt2 - powf(ls_sumDt,2);
+            float ls_denom = windowSize * ls_sumDt2 - powf(ls_sumDt,2);
             
             errorEst_x = (ls_sumDt2 * ls_sumDx - ls_sumDtDx * ls_sumDt) / ls_denom;
             errorEst_vx = (windowSize * ls_sumDtDx - ls_sumDt * ls_sumDx) / ls_denom;
@@ -197,7 +204,7 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
 }
 
 
-void movingHorizonShiftWindow(float *window[], int windowSize){
+void movingHorizonShiftWindow(float *window, int windowSize){
     uint8_t i;
     for (i=0; i<windowSize; i++){
         window[i] = window[i+1];
@@ -233,7 +240,7 @@ void projectOnTDOA(tdoaMeasurement_t *tdoa, point_t *origin, point_t *projection
 
     float x1 = tdoa->anchorPosition[1].x, y1 = tdoa->anchorPosition[1].y, z1 = tdoa->anchorPosition[1].z;
     float x0 = tdoa->anchorPosition[0].x, y0 = tdoa->anchorPosition[0].y, z0 = tdoa->anchorPosition[0].z;
-    float x = origin.x, y = origin.y, z = origin.z;
+    float x = origin->x, y = origin->y, z = origin->z;
         
     float dx1 = x - x1;
     float dy1 = y - y1;
@@ -244,7 +251,7 @@ void projectOnTDOA(tdoaMeasurement_t *tdoa, point_t *origin, point_t *projection
     float dz0 = z - z0;
 
     float d1 = sqrtf(powf(dx1, 2) + powf(dy1, 2) + powf(dz1, 2));
-    float d0 = sqrtf(powf(dx0, 2) + powf(dy0, 2) + powf(dz0, 2))
+    float d0 = sqrtf(powf(dx0, 2) + powf(dy0, 2) + powf(dz0, 2));
     vector_t grad = {
         .x = (dx1/d1 - dx0/d0),
         .y = (dy1/d1 - dy0/d0), 
@@ -262,15 +269,15 @@ void projectOnTDOA(tdoaMeasurement_t *tdoa, point_t *origin, point_t *projection
 
         t -= error/error_der;
 
-        d1 = sqrtf(powf(dx1+t*grad.x)+powf(dy1+t*grad.y)+powf(dz1+t*grad.z));
-        d0 = sqrtf(powf(dx0+t*grad.x)+powf(dy0+t*grad.y)+powf(dz0+t*grad.z));
+        d1 = sqrtf(powf(dx1+t*grad.x,2)+powf(dy1+t*grad.y,2)+powf(dz1+t*grad.z,2));
+        d0 = sqrtf(powf(dx0+t*grad.x,2)+powf(dy0+t*grad.y,2)+powf(dz0+t*grad.z,2));
          
         error = d1 - d0 - tdoa_measured;
     }
         
-    projection.x = x + t*grad.x;
-    projection.y = y + t*grad.y;
-    projection.z = z + t*grad.z;
+    projection->x = x + t*grad.x;
+    projection->y = y + t*grad.y;
+    projection->z = z + t*grad.z;
 }
 
 bool positionFromTDOA(point_t prediction, point_t *measurement){
@@ -282,7 +289,7 @@ bool positionFromTDOA(point_t prediction, point_t *measurement){
     // get all measurements from queue
     tdoaMeasurement_t tdoa[UWB_QUEUE_LENGTH];
     int8_t tdoa_count = 0;
-    while (stateEstimatortHasTDOAPacket(&tdoa(tdoa_count)) && tdoa_count<UWB_QUEUE_LENGTH){
+    while (stateEstimatorHasTDOAPacket(&tdoa[tdoa_count]) && tdoa_count<UWB_QUEUE_LENGTH){
         tdoa_count++;
     }
 
@@ -313,22 +320,22 @@ bool positionFromTDOA(point_t prediction, point_t *measurement){
 
     int8_t i;
     do{
-        for (i=0,i<tdoa_count,i++){
+        for (i=0;i<tdoa_count;i++){
             float x0 = tdoa[i].anchorPosition[0].x, y0 = tdoa[i].anchorPosition[0].y, z0 = tdoa[i].anchorPosition[0].z;
             float x1 = tdoa[i].anchorPosition[1].x, y1 = tdoa[i].anchorPosition[1].y, z1 = tdoa[i].anchorPosition[1].z;
             
-            float dx1 = x - x1;
-            float dy1 = y - y1;
-            float dz1 = z - z1;
+            float dx1 = uwb_position[0] - x1;
+            float dy1 = uwb_position[1] - y1;
+            float dz1 = uwb_position[2] - z1;
 
-            float dy0 = y - y0;
-            float dx0 = x - x0;
-            float dz0 = z - z0;  
+            float dx0 = uwb_position[0] - x0;
+            float dy0 = uwb_position[1] - y0;
+            float dz0 = uwb_position[2] - z0;  
             
             float d1 = sqrtf(powf(dx1, 2) + powf(dy1, 2) + powf(dz1, 2));
             float d0 = sqrtf(powf(dx0, 2) + powf(dy0, 2) + powf(dz0, 2));
 
-            S[i] = d1 - d0 - tdoa[i].distanceDiff;
+            S_d[i] = d1 - d0 - tdoa[i].distanceDiff;
             J_d[i+0] = (dx1/d1 - dx0/d0);
             J_d[i+1] = (dy1/d1 - dy0/d0);
             J_d[i+2] = (dz1/d1 - dz0/d0);
@@ -336,7 +343,7 @@ bool positionFromTDOA(point_t prediction, point_t *measurement){
 
         arm_mat_trans_f32(&J_m, &JT_m);                 // J'
         arm_mat_mult_f32(&JT_m,&J_m,&JTJ_m);            // (J'J)
-        arm_mat_inverse_f64(&JTJ_m,&JTJinv_m);          // (J'J)-1
+        arm_mat_inverse_f32(&JTJ_m,&JTJinv_m);          // (J'J)-1
         arm_mat_mult_f32(&JTJinv_m,&JT_m,&JTJpinv_m);   // (J'J)-1 *J'
         arm_mat_mult_f32(&JTJpinv_m,&S_m,&delta_m);     // delta = [(J'J)-1 J]*S 
         
