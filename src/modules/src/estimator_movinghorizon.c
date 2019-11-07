@@ -15,6 +15,8 @@
 #include "sensors.h"
 #include "position_estimator.h"
 #include <math.h>
+#include "math3d.h"
+#include "cf_math.h"
 
 #include "FreeRTOS.h"
 #include "queue.h"
@@ -37,6 +39,7 @@ static inline bool stateEstimatorHasTDOAPacket(tdoaMeasurement_t *uwb) {
 #define POS_UPDATE_DT 1.0/POS_UPDATE_RATE
 
 #define MOVING_HORIZON_MAX_WINDOW_SIZE 10
+#define NEWTON_RAPHSON_THRESHOLD 0.001f
 
 #define CONST_G 9.81f
 #define CONST_K_AERO 0.35f
@@ -48,8 +51,15 @@ struct stateWindow_s {
     float vy[MOVING_HORIZON_MAX_WINDOW_SIZE];
 };
 
+// shift window by one step
 void movingHorizonShiftWindow(float *window[], int windowSize);
+
+// for position correction with any number of tdoa measurements (less accurate)
 void projectOnTDOA(tdoaMeasurement_t *tdoa, point_t *original, point_t *projection);
+
+// position calculation with > 3 tdoa measurements (returns false otherwise) using Newton-Raphson
+// for multilateration
+bool positionFromTDOA(point_t prediction, point_t *measurement)
 
 point_t loc_prediction ={
     .x = 0.0f,
@@ -74,15 +84,18 @@ struct stateWindow_s delta ={
     .vy = {0.0f},
 };
 
-uint8_t currentWindowSize = 0;
+float time_w[MOVING_HORIZON_MAX_WINDOW_SIZE] = {0.0f};
+float dt_w[MOVING_HORIZON_MAX_WINDOW_SIZE] = {0.0f};
 
-float ls_sumX = 0;
-float ls_sumX2 = 0;
-float lsx_sumY = 0;
-float lsx_sumXY = 0;
-float lsy_sumY = 0;
-float lsy_sumXY = 0;
-float ls_denom = 0;
+uint8_t windowSize = 0;
+
+float ls_sumDt;
+float ls_sumDt2;
+float ls_sumDx;
+float ls_sumDtDx;
+float ls_sumDy;
+float ls_sumDtDy;
+float ls_denom;
 
 float errorEst_x = 0;
 float errorEst_vx = 0;
@@ -129,71 +142,68 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
     }
 
     if (RATE_DO_EXECUTE(POS_UPDATE_RATE, tick)) {
-    // update z position
-    positionEstimate(state, sensorData, POS_UPDATE_DT, tick);
-    
-    // Moving Horizon predictor for x,y
-    if (currentWindowSize == MOVING_HORIZON_MAX_WINDOW_SIZE){
-        // remove discarded timestep from Least Squares Sums
-        lsx_sumY -= delta.x[0];
-        lsy_sumY -= delta.y[0];
-        // Shift window
-        movingHorizonShiftWindow(delta.x,currentWindowSize);
-        movingHorizonShiftWindow(delta.y,currentWindowSize);
+        // update z position
+        positionEstimate(state, sensorData, POS_UPDATE_DT, tick);
+        
+        // predict current state
+        loc_prediction.x += vel_prediction.x * POS_UPDATE_DT;
+        loc_prediction.y += vel_prediction.y * POS_UPDATE_DT;
+        vel_prediction.x += (-CONST_G*tan(state->attitude.pitch) - CONST_K_AERO*vel_prediction.x) * POS_UPDATE_DT;
+        vel_prediction.x += (CONST_G*tan(state->attitude.roll) - CONST_K_AERO*vel_prediction.y) * POS_UPDATE_DT;
+
+        time_w[windowSize] = xTaskGetTickCount();
+        
+        // Only execute filter if we can calculate a new position from tdoa measurements      
+        if (positionFromTDOA(loc_prediction,&loc_measurement)){
+
+            if (windowSize == MOVING_HORIZON_MAX_WINDOW_SIZE){
+                movingHorizonShiftWindow(delta.x, windowSize);
+                movingHorizonShiftWindow(delta.y, windowSize);
+                movingHorizonShiftWindow(time_w, windowSize);
+            }
+            else{ 
+                windowSize += 1;
+            }
+            
+            delta.x[windowSize] = loc_measurement.x - loc_prediction.x;
+            delta.y[windowSize] = loc_measurement.y - loc_prediction.y;
+            
+            // Least Squares (no RANSAC)
+            // reset sums
+            ls_sumDt = 0.0f;
+            ls_sumDt2 = 0.0f;
+            ls_sumDx = 0.0f;
+            ls_sumDtDx = 0.0f;
+            ls_sumDy = 0.0f;
+            ls_sumDtDy = 0.0f;
+            
+            // compute new sums
+            uint8_t i;
+            for (i=0;i<windowSize,i++){
+                dt_w[i] = time_w[i]-time_w[0]; 
+
+                ls_sumDt += dt_w[i];
+                ls_sumDt2 += powf(dt_w[i],2);
+                ls_sumDx += delta.x[i];
+                ls_sumDtDx += dt_w[i] * delta.x[i];
+                ls_sumDy += delta.y[i];
+                ls_sumDtDy += dt_w[i] * delta.y[i];
+            }
+
+            ls_denom = windowSize * ls_sumDt2 - powf(ls_sumDt,2);
+            
+            errorEst_x = (ls_sumDt2 * ls_sumDx - ls_sumDtDx * ls_sumDt) / ls_denom;
+            errorEst_vx = (windowSize * ls_sumDtDx - ls_sumDt * ls_sumDx) / ls_denom;
+            errorEst_y = (ls_sumDt2 * ls_sumDy - ls_sumDtDy * ls_sumDt) / ls_denom;
+            errorEst_vy = (windowSize * ls_sumDtDy - ls_sumDt * ls_sumDy) / ls_denom;
+        }
+        
+        // correction of prediction
+        state->position.x = loc_prediction.x + errorEst_x + errorEst_vx * (time_w[windowSize]-time_w[0]);
+        state->position.y = loc_prediction.y + errorEst_y + errorEst_vy * (time_w[windowSize]-time_w[0]);
+        state->velocity.x = vel_prediction.x + errorEst_vx;
+        state->velocity.y = vel_prediction.y + errorEst_vy;
     }
-    else{
-        currentWindowSize += 1;
-        ls_sumX += POS_UPDATE_DT;
-        ls_sumX2 += POS_UPDATE_DT*POS_UPDATE_DT;
-        ls_denom = currentWindowSize * LS_sumX2 - LS_sumX * LS_sumX;
-    }
-
-    // predict next state
-    uint8_t k = currentWindowSize;
-    loc_prediction.x += vel_prediction.x * POS_UPDATE_DT;
-    loc_prediction.y += vel_prediction.y * POS_UPDATE_DT;
-    vel_prediction.x += (-CONST_G*tan(state->attitude.pitch) - CONST_K_AERO*vel_prediction.x) * POS_UPDATE_DT;
-    vel_prediction.x += (CONST_G*tan(state->attitude.roll) - CONST_K_AERO*vel_prediction.y) * POS_UPDATE_DT;
-    
-    // Get UWB position estimates
-    tdoaMeasurement_t tdoa;
-    point_t projection[UWB_QUEUE_LENGTH]
-    vector_t sum_for_avg = {.x=0,.y=0,.z=0};
-    uint8_t tdoa_count = 0;
-    while (stateEstimatorHasTDOAPacket(&tdoa) && tdoa_count < UWB_QUEUE_LENGTH){
-        projectOnTDOA(&tdoa, &loc_prediction, &projection[tdoa_count]);
-        tdoa_count++;
-        sum_for_avg.x += projection[tdoa_count].x;
-        sum_for_avg.y += projection[tdoa_count].y;
-        sum_for_avg.z += projection[tdoa_count].z;
-    }
-    // No outlier rejection yet
-    loc_measurement.x = sum_for_avg.x/tdoa_count;
-    loc_measurement.y = sum_for_avg.x/tdoa_count;
-    loc_measurement.z = sum_for_avg.x/tdoa_count;
-
-    // estimate error
-    delta.x[k] = loc_measurement.x - loc_prediction.x;
-    delta.y[k] = loc_measurement.y - loc_prediction.y;
-    
-    // update least squares sums
-    lsx_sumXY += (- POS_UPDATE_DT*LSx_sumY) + currentWindowSize*POS_UPDATE_DT*delta.x[k];
-    lsx_sumY += delta.x[k];
-    lsy_sumXY += (- POS_UPDATE_DT*LSy_sumY) + currentWindowSize*POS_UPDATE_DT*delta.y[k];
-    lsy_sumY += delta.y[k];
-
-    errorEst_x = (ls_sumX2 * lsx_sumY - lsx_sumXY * ls_sumX) / ls_denom;
-    errorEst_vx = (currentWindowSize * lsx_sumXY - ls_sumX * lsx_sumY) / ls_denom;
-    errorEst_y = (ls_sumX2 * lsy_sumY - lsy_sumXY * ls_sumX) / ls_denom;
-    errorEst_vy = (currentWindowSize * lsy_sumXY - ls_sumX * lsy_sumY) / ls_denom;
-
-    // correction of prediction
-    state->position.x = loc_prediction.x + errorEst_x + errorEst_vx * k * POS_UPDATE_DT;
-    state->position.y = loc_prediction.y + errorEst_y + errorEst_vy * k * POS_UPDATE_DT;
-    state->velocity.x = vel_prediction.x + errorEst_vx;
-    state->velocity.y = vel_prediction.y + errorEst_vy;
- 
-  }
 }
 
 
@@ -271,4 +281,84 @@ void projectOnTDOA(tdoaMeasurement_t *tdoa, point_t *origin, point_t *projection
     projection.x = x + t*grad.x;
     projection.y = y + t*grad.y;
     projection.z = z + t*grad.z;
+}
+
+bool positionFromTDOA(point_t prediction, point_t *measurement){
+    
+    if (uxQueueMessagesWaiting(tdoaDataQueue) <3){ 
+        return false;
+    }
+
+    // get all measurements from queue
+    tdoaMeasurement_t tdoa[UWB_QUEUE_LENGTH];
+    int8_t tdoa_count = 0;
+    while (stateEstimatortHasTDOAPacket(&tdoa(tdoa_count)) && tdoa_count<UWB_QUEUE_LENGTH){
+        tdoa_count++;
+    }
+
+    
+    float uwb_position[3] = {prediction.x, prediction.y, prediction.z};
+    float threshold = NEWTON_RAPHSON_THRESHOLD;
+    
+    float delta[3];
+    arm_matrix_instance_f32 delta_m = {3, 1, (float *)delta};
+    
+    float S_d[tdoa_count];
+    arm_matrix_instance_f32 S_m = {tdoa_count, 1, (float *)S_d};
+
+    float J_d[tdoa_count*3];
+    arm_matrix_instance_f32 J_m = {tdoa_count, 3, (float *)J_d};
+    
+    float JT_d[tdoa_count*3];
+    arm_matrix_instance_f32 JT_m = {3, tdoa_count, (float *)JT_d};
+    
+    float JTJ_d[3*3];
+    arm_matrix_instance_f32 JTJ_m = {3, 3, (float *)JTJ_d};
+
+    float JTJinv_d[3*3];
+    arm_matrix_instance_f32 JTJinv_m ={3, 3, (float *)JTJinv_d};
+
+    float JTJpinv_d[tdoa_count*3];
+    arm_matrix_instance_f32 JTJpinv_m = {3, tdoa_count, (float *)JTJpinv_d};
+
+    int8_t i;
+    do{
+        for (i=0,i<tdoa_count,i++){
+            float x0 = tdoa[i].anchorPosition[0].x, y0 = tdoa[i].anchorPosition[0].y, z0 = tdoa[i].anchorPosition[0].z;
+            float x1 = tdoa[i].anchorPosition[1].x, y1 = tdoa[i].anchorPosition[1].y, z1 = tdoa[i].anchorPosition[1].z;
+            
+            float dx1 = x - x1;
+            float dy1 = y - y1;
+            float dz1 = z - z1;
+
+            float dy0 = y - y0;
+            float dx0 = x - x0;
+            float dz0 = z - z0;  
+            
+            float d1 = sqrtf(powf(dx1, 2) + powf(dy1, 2) + powf(dz1, 2));
+            float d0 = sqrtf(powf(dx0, 2) + powf(dy0, 2) + powf(dz0, 2));
+
+            S[i] = d1 - d0 - tdoa[i].distanceDiff;
+            J_d[i+0] = (dx1/d1 - dx0/d0);
+            J_d[i+1] = (dy1/d1 - dy0/d0);
+            J_d[i+2] = (dz1/d1 - dz0/d0);
+        }
+
+        arm_mat_trans_f32(&J_m, &JT_m);                 // J'
+        arm_mat_mult_f32(&JT_m,&J_m,&JTJ_m);            // (J'J)
+        arm_mat_inverse_f64(&JTJ_m,&JTJinv_m);          // (J'J)-1
+        arm_mat_mult_f32(&JTJinv_m,&JT_m,&JTJpinv_m);   // (J'J)-1 *J'
+        arm_mat_mult_f32(&JTJpinv_m,&S_m,&delta_m);     // delta = [(J'J)-1 J]*S 
+        
+        uwb_position[0] -= delta[0];
+        uwb_position[1] -= delta[1];
+        uwb_position[2] -= delta[2];
+        
+    } while(delta[0] > threshold || delta[1] > threshold || delta[2] > threshold);
+
+    measurement->x = uwb_position[0];
+    measurement->y = uwb_position[1];
+    measurement->z = uwb_position[2];
+    
+    return true;
 }
