@@ -16,6 +16,7 @@
 #include "position_estimator.h"
 #include "log.h"
 
+#include <stdlib.h>
 #include <math.h>
 #include "math3d.h"
 #include "cf_math.h"
@@ -41,8 +42,11 @@ static inline bool stateEstimatorHasTDOAPacket(tdoaMeasurement_t *uwb) {
 #define POS_UPDATE_RATE RATE_100_HZ
 #define POS_UPDATE_DT 1.0f/POS_UPDATE_RATE
 
-#define MOVING_HORIZON_MAX_WINDOW_SIZE 10
+#define MOVING_HORIZON_MIN_WINDOW_SIZE 4
+#define MOVING_HORIZON_MAX_WINDOW_SIZE 20
 #define NEWTON_RAPHSON_THRESHOLD 0.001f
+#define RANSAC_ITERATIONS 5
+#define RANSAC_ERROR_THRESHOLD 0.02f    // Maximum accounted error per timestep when comparing RANSAC iterations
 
 #define CONST_G 9.81f
 #define CONST_K_AERO 0.35f
@@ -57,8 +61,14 @@ void projectOnTDOA(tdoaMeasurement_t *tdoa, point_t *original, point_t *projecti
 // for multilateration
 bool positionFromTDOA(point_t prediction, point_t *measurement);
 
-// Solves the least squares problem y=mx+b, where length(x)=length(y)=N
-void linearLeastSquares(float *x, float *y, float N, float *m, float *b);
+// calculate a new error model [delta_x,delta_vx] based on the positioning errors in errorWindow
+// at the times in timeWindow
+void updateErrorModel(float *errorWindow, float *timeWindow, int8_t windowSize, float *errorModel);
+
+// Solves the least squares problem y=mx+b
+// N: Length of Vectors x and y
+// params[2] = [b,m]
+void linearLeastSquares(float *x, float *y, float N, float *params);
 
 static bool isInit = false;
 static point_t loc_prediction;
@@ -72,12 +82,11 @@ static float dx_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dy_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
  
 static uint8_t windowSize;
+static float samplingRatio = 0.5;
 
 // Error estimations
-static float errorEst_x;
-static float errorEst_vx;
-static float errorEst_y;
-static float errorEst_vy;
+static float errorModel_x[2];
+static float errorModel_y[2];
 
 void estimatorMovingHorizonInit(void)
 {
@@ -102,10 +111,10 @@ void estimatorMovingHorizonInit(void)
         dy_w[i] = 0.0f;
     }
     windowSize = 0;
-    errorEst_x = 0.0f;
-    errorEst_vx = 0.0f;
-    errorEst_y = 0.0f;
-    errorEst_vy = 0.0f;
+    errorModel_x[0] = 0.0f;
+    errorModel_x[1] = 0.0f;
+    errorModel_y[0] = 0.0f;
+    errorModel_y[1] = 0.0f;
 
     isInit = true;
 }
@@ -171,20 +180,16 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
             dx_w[windowSize] = loc_measurement.x - loc_prediction.x;
             dy_w[windowSize] = loc_measurement.y - loc_prediction.y;
             
-            uint8_t i;
-            for (i=0;i<windowSize;i++){
-                dt_w[i] = time_w[i]-time_w[0]; 
+            if (windowSize >= MOVING_HORIZON_MIN_WINDOW_SIZE){
+                updateErrorModel(dx_w, dt_w, windowSize, errorModel_x);
+                updateErrorModel(dy_w, dt_w, windowSize, errorModel_y);
             }
-
-            linearLeastSquares(dt_w, dx_w, windowSize, &errorEst_vx, &errorEst_x);
-            linearLeastSquares(dt_w, dy_w, windowSize, &errorEst_vy, &errorEst_y);
         }
-        
         // correction of prediction
-        state->position.x = loc_prediction.x + errorEst_x + errorEst_vx * (time_w[windowSize]-time_w[0]);
-        state->position.y = loc_prediction.y + errorEst_y + errorEst_vy * (time_w[windowSize]-time_w[0]);
-        state->velocity.x = vel_prediction.x + errorEst_vx;
-        state->velocity.y = vel_prediction.y + errorEst_vy;
+        state->position.x = loc_prediction.x + errorModel_x[0] + errorModel_x[1] * (time_w[windowSize]-time_w[0]);
+        state->position.y = loc_prediction.y + errorModel_y[0] + errorModel_y[1] * (time_w[windowSize]-time_w[0]);
+        state->velocity.x = vel_prediction.x + errorModel_x[1];
+        state->velocity.y = vel_prediction.y + errorModel_y[1];
     }
 }
 
@@ -345,7 +350,57 @@ bool positionFromTDOA(point_t prediction, point_t *measurement){
     return true;
 }
 
-void linearLeastSquares(float *x, float *y, float N, float *m, float *b){
+void updateErrorModel(float *errorWindow, float *timeWindow, int8_t windowSize, float *errorModel){
+    uint8_t i;
+    float dt_w[windowSize];
+    for (i=0;i<windowSize;i++){
+        dt_w[i] = timeWindow[i]-timeWindow[0]; 
+    }
+
+    // RANSAC
+    uint8_t N_samples = (uint8_t)floor(windowSize*samplingRatio);
+    if (N_samples < 2) { N_samples = 2; }
+    
+    uint8_t ransac_idx[N_samples];
+    float totalError, stepError;
+    float bestIteration = windowSize * RANSAC_ERROR_THRESHOLD;
+    float sampleErrorModel[2];
+    for (i=0;i<RANSAC_ITERATIONS;i++){
+        // select N_sample unique samples
+        float dt_s[N_samples], dx_s[N_samples];
+        uint8_t j = 0;
+        while(j<N_samples){
+            ransac_idx[j] = (uint8_t)floor(windowSize * rand()/RAND_MAX );
+            bool isUnique = true;
+            for(int8_t k=0;k<j;k++){
+                isUnique &= (ransac_idx[j] != ransac_idx[k]);
+            }
+            if (isUnique){
+                dt_s[j] = dt_w[ransac_idx[j]];
+                dx_s[j] = errorWindow[ransac_idx[j]];
+                j++;
+            }
+        }
+        
+        linearLeastSquares(dt_s, dx_s, N_samples, sampleErrorModel);
+
+        totalError = 0;
+        for (j=0;j<windowSize;j++){
+            stepError = abs(sampleErrorModel[1] * dt_w[j] + sampleErrorModel[0] - dx_w[j]);
+            if (stepError > RANSAC_ERROR_THRESHOLD){ stepError = RANSAC_ERROR_THRESHOLD; }
+            
+            totalError += stepError;
+        }
+
+        if (totalError < bestIteration){
+            bestIteration = totalError;
+            errorModel[0] = sampleErrorModel[0];
+            errorModel[1] = sampleErrorModel[1];
+        }
+    }
+}
+
+void linearLeastSquares(float *x, float *y, float N, float *params){
     // Linear Least Squares (no RANSAC)
     float sumX = 0.0f;
     float sumX2 = 0.0f;
@@ -362,8 +417,8 @@ void linearLeastSquares(float *x, float *y, float N, float *m, float *b){
 
     float denom = N * sumX2 - powf(sumX,2);
     
-    *b = (sumX2 * sumY - sumXY * sumX) / denom;
-    *m = (N * sumXY - sumX * sumY) / denom;
+    params[0] = (sumX2 * sumY - sumXY * sumX) / denom;
+    params[1] = (N * sumXY - sumX * sumY) / denom;
 }
 
 
@@ -372,8 +427,8 @@ LOG_GROUP_START(mhe)
     LOG_ADD(LOG_FLOAT, uwbX, &loc_measurement.x)
     LOG_ADD(LOG_FLOAT, uwbY, &loc_measurement.y)
     LOG_ADD(LOG_FLOAT, uwbZ, &loc_measurement.z)
-    LOG_ADD(LOG_FLOAT, dx, &errorEst_x)
-    LOG_ADD(LOG_FLOAT, dvx, &errorEst_vx)
-    LOG_ADD(LOG_FLOAT, dy, &errorEst_y)
-    LOG_ADD(LOG_FLOAT, dvy, &errorEst_vy)
+    LOG_ADD(LOG_FLOAT, dx, &errorModel_x[0])
+    LOG_ADD(LOG_FLOAT, dvx, &errorModel_x[1])
+    LOG_ADD(LOG_FLOAT, dy, &errorModel_y[0])
+    LOG_ADD(LOG_FLOAT, dvy, &errorModel_y[1])
 LOG_GROUP_STOP(mhe)
