@@ -77,7 +77,6 @@ static velocity_t vel_prediction;
 
 // variables in moving windows
 static float time_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
-static float dt_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dx_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dy_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
  
@@ -106,7 +105,6 @@ void estimatorMovingHorizonInit(void)
     int8_t i;
     for (i=0;i<MOVING_HORIZON_MAX_WINDOW_SIZE;i++){
         time_w[i] = 0.0f;
-        dt_w[i] = 0.0f;
         dx_w[i] = 0.0f;
         dy_w[i] = 0.0f;
     }
@@ -163,7 +161,7 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         vel_prediction.x += (-CONST_G*tanf(state->attitude.pitch) - CONST_K_AERO*vel_prediction.x) * POS_UPDATE_DT;
         vel_prediction.x += (CONST_G*tanf(state->attitude.roll) - CONST_K_AERO*vel_prediction.y) * POS_UPDATE_DT;
 
-        time_w[windowSize] = xTaskGetTickCount();
+        time_w[windowSize] = xTaskGetTickCount(); // Do we need to account for wrapping?
         
         // Only execute filter if we can calculate a new position from tdoa measurements      
         if (positionFromTDOA(loc_prediction,&loc_measurement)){
@@ -181,8 +179,8 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
             dy_w[windowSize] = loc_measurement.y - loc_prediction.y;
             
             if (windowSize >= MOVING_HORIZON_MIN_WINDOW_SIZE){
-                updateErrorModel(dx_w, dt_w, windowSize, errorModel_x);
-                updateErrorModel(dy_w, dt_w, windowSize, errorModel_y);
+                updateErrorModel(dx_w, time_w, windowSize, errorModel_x);
+                updateErrorModel(dy_w, time_w, windowSize, errorModel_y);
             }
         }
         // correction of prediction
