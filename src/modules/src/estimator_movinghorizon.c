@@ -54,12 +54,11 @@ static inline bool stateEstimatorHasTDOAPacket(tdoaMeasurement_t *uwb) {
 // shift variables in the window by one step
 void movingHorizonShiftWindow(float *window, int windowSize);
 
-// for position correction with any number of tdoa measurements (less accurate)
-void projectOnTDOA(tdoaMeasurement_t *tdoa, point_t *original, point_t *projection);
+// for position with a single tdoa measurement, projects current estimate onto the tdoa measurement surface
+void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *projection);
 
-// position calculation with > 3 tdoa measurements (returns false otherwise) using Newton-Raphson
-// for multilateration
-bool positionFromTDOA(point_t prediction, point_t *measurement);
+// position calculation with > 3 tdoa measurements (multilateration), directly accesses tdoaDataQueue
+void positionFromTDOAmulti(point_t prediction, point_t *measurement);
 
 // calculate a new error model [delta_x,delta_vx] based on the positioning errors in errorWindow
 // at the times in timeWindow
@@ -71,6 +70,7 @@ void updateErrorModel(float *errorWindow, float *timeWindow, int8_t windowSize, 
 void linearLeastSquares(float *x, float *y, float N, float *params);
 
 static bool isInit = false;
+static bool tdoaUpdate = false;
 static point_t loc_prediction;
 static point_t loc_measurement;
 static velocity_t vel_prediction;
@@ -115,6 +115,7 @@ void estimatorMovingHorizonInit(void)
     errorModel_y[1] = 0.0f;
 
     isInit = true;
+    tdoaUpdate = false;
 }
 
 bool estimatorMovingHorizonTest(void)
@@ -163,8 +164,19 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
 
         time_w[windowSize] = xTaskGetTickCount(); // Do we need to account for wrapping?
         
-        // Only execute filter if we can calculate a new position from tdoa measurements      
-        if (positionFromTDOA(loc_prediction,&loc_measurement)){
+        if (uxQueueMessagesWaiting(tdoaDataQueue) >= 3){ 
+            positionFromTDOAmulti(loc_prediction,&loc_measurement);
+            tdoaUpdate = true;
+        }
+        else{
+            tdoaMeasurement_t tdoa;
+            while (stateEstimatorHasTDOAPacket(&tdoa)){
+                positionFromTDOAsingle(&tdoa,&loc_prediction,&loc_measurement);
+                tdoaUpdate = true;
+            }
+        }
+              
+        if (tdoaUpdate){
 
             if (windowSize == MOVING_HORIZON_MAX_WINDOW_SIZE){
                 movingHorizonShiftWindow(dx_w, windowSize);
@@ -182,6 +194,8 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
                 updateErrorModel(dx_w, time_w, windowSize, errorModel_x);
                 updateErrorModel(dy_w, time_w, windowSize, errorModel_y);
             }
+
+            tdoaUpdate = false;
         }
         // correction of prediction
         state->position.x = loc_prediction.x + errorModel_x[0] + errorModel_x[1] * (time_w[windowSize]-time_w[0]);
@@ -223,55 +237,86 @@ bool estimatorMovingHorizonEnqueueTDOA(const tdoaMeasurement_t *uwb){
       return stateEstimatorEnqueueExternalMeasurement(tdoaDataQueue, (void *)uwb);
 }
 
-void projectOnTDOA(tdoaMeasurement_t *tdoa, point_t *origin, point_t *projection){
-    float tdoa_measured = tdoa->distanceDiff;
-
-    float x1 = tdoa->anchorPosition[1].x, y1 = tdoa->anchorPosition[1].y, z1 = tdoa->anchorPosition[1].z;
-    float x0 = tdoa->anchorPosition[0].x, y0 = tdoa->anchorPosition[0].y, z0 = tdoa->anchorPosition[0].z;
-    float x = origin->x, y = origin->y, z = origin->z;
+void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *projection){
+    float x_A[3] = {tdoa->anchorPosition[1].x, 
+                    tdoa->anchorPosition[1].y, 
+                    tdoa->anchorPosition[1].z};
+    float x_B[3] = {tdoa->anchorPosition[0].x, 
+                    tdoa->anchorPosition[0].y, 
+                    tdoa->anchorPosition[0].z};
+    
+    // X = [x_s, y_s, z_s, t]
+    float X[4] = {prior->x, prior->y, prior->z, 0.0f};  // initial guess is the original point
         
-    float dx1 = x - x1;
-    float dy1 = y - y1;
-    float dz1 = z - z1;
+    float dA, dB;
+    float gradS[3];
+    
+    float F[4];
+    arm_matrix_instance_f32 F_m = {4, 4, (float *)F};
+    
+    float J[16];
+    arm_matrix_instance_f32 J_m = {4, 4, (float *)J};
 
-    float dy0 = y - y0;
-    float dx0 = x - x0;
-    float dz0 = z - z0;
+    float Jinv[16];
+    arm_matrix_instance_f32 Jinv_m = {4, 4, (float *)Jinv};
 
-    float d1 = sqrtf(powf(dx1, 2) + powf(dy1, 2) + powf(dz1, 2));
-    float d0 = sqrtf(powf(dx0, 2) + powf(dy0, 2) + powf(dz0, 2));
-    vector_t grad = {
-        .x = (dx1/d1 - dx0/d0),
-        .y = (dy1/d1 - dy0/d0), 
-        .z = (dz1/d1 - dz0/d0),};
+    float delta[4];
+    arm_matrix_instance_f32 delta_m ={4, 1, (float *)delta};
+
+    float threshold = NEWTON_RAPHSON_THRESHOLD;
+    do{
+        dA = sqrtf(powf(X[0]-x_A[0],2) + powf(X[1]-x_A[1],2) + powf(X[2]-x_A[2],2));
+        dB = sqrtf(powf(X[0]-x_B[0],2) + powf(X[1]-x_B[1],2) + powf(X[2]-x_B[2],2));
+        // TODO: implement fast inverse sqrt algorithm
         
-    // Newton-Raphson with tdoa gradient constant (value @originalPoint)
-    // Initial Guess: original point (t=0)
-    float error = d1 - d0 - tdoa_measured;
-    float error_der;
-    float t = 0;
-    while (fabsf(error) >= 0.001f)
-    {
-        error_der = (grad.x * (dx1 + t*grad.x) + grad.y * (dy1 + t*grad.y) + grad.z * (dz1 + t*grad.z))/d1
-                    - (grad.x * (dx0 + t*grad.x) + grad.y * (dy0 + t*grad.y) + grad.z * (dz0 + t*grad.z))/d0;
-
-        t -= error/error_der;
-
-        d1 = sqrtf(powf(dx1+t*grad.x,2)+powf(dy1+t*grad.y,2)+powf(dz1+t*grad.z,2));
-        d0 = sqrtf(powf(dx0+t*grad.x,2)+powf(dy0+t*grad.y,2)+powf(dz0+t*grad.z,2));
-         
-        error = d1 - d0 - tdoa_measured;
-    }
+        gradS[0] = (X[0]-x_A[0])/dA - (X[0]-x_B[0])/dB;
+        gradS[1] = (X[1]-x_A[1])/dA - (X[1]-x_B[1])/dB;
+        gradS[2] = (X[2]-x_A[2])/dA - (X[2]-x_B[2])/dB;
         
-    projection->x = x + t*grad.x;
-    projection->y = y + t*grad.y;
-    projection->z = z + t*grad.z;
+        F[0] = X[0] + X[3]*gradS[0] - prior->x;
+        F[1] = X[1] + X[3]*gradS[1] - prior->y;
+        F[2] = X[2] + X[3]*gradS[2] - prior->z;
+        F[3] = dA - dB - tdoa->distanceDiff;
+
+        J[0] = 1/dA - 1/dB - ( (X[0]-x_A[0])*(X[0]-x_A[0])/powf(dA,3) - (X[0]-x_B[0])*(X[0]-x_A[0])/powf(dB,3) );
+        J[1] =      0      - ( (X[1]-x_A[1])*(X[0]-x_A[0])/powf(dA,3) - (X[1]-x_B[1])*(X[0]-x_B[0])/powf(dB,3) );
+        J[2] =      0      - ( (X[2]-x_A[2])*(X[0]-x_A[0])/powf(dA,3) - (X[2]-x_B[2])*(X[0]-x_B[0])/powf(dB,3) );
+        J[3] = gradS[0];
+
+        J[4] = J[1];
+        J[5] = 1/dA - 1/dB - ( (X[1]-x_A[1])*(X[1]-x_A[1])/powf(dA,3) - (X[1]-x_B[1])*(X[1]-x_B[1])/powf(dB,3) );
+        J[6] =      0      - ( (X[2]-x_A[2])*(X[1]-x_A[1])/powf(dA,3) - (X[2]-x_B[2])*(X[1]-x_B[1])/powf(dB,3) );
+        J[7] = gradS[1];
+
+        J[8] = J[2];
+        J[9] = J[6];
+        J[10]= 1/dA - 1/dB - ( (X[2]-x_A[2])*(X[2]-x_A[2])/powf(dA,3) - (X[2]-x_B[2])*(X[2]-x_B[2])/powf(dB,3) );
+        J[11]= gradS[2];
+
+        J[12] = J[3];
+        J[13] = J[7];
+        J[14] = J[11];
+        J[15] = 0;
+
+        arm_mat_inverse_f32(&J_m,&Jinv_m);          // J-1(X)
+        arm_mat_mult_f32(&Jinv_m,&F_m,&delta_m);     // delta = J-1(X)*F(X)
+        
+        X[0] -= delta[0];
+        X[1] -= delta[1];
+        X[2] -= delta[2];
+        X[3] -= delta[3];
+        
+    } while(delta[0] > threshold || delta[1] > threshold || delta[2] > threshold);
+    
+    projection->x = X[0];
+    projection->y = X[1];
+    projection->z = X[2];
 }
 
-bool positionFromTDOA(point_t prediction, point_t *measurement){
+void positionFromTDOAmulti(point_t prediction, point_t *measurement){
     
     if (uxQueueMessagesWaiting(tdoaDataQueue) <3){ 
-        return false;
+        return;
     }
 
     // get all measurements from queue
@@ -345,7 +390,6 @@ bool positionFromTDOA(point_t prediction, point_t *measurement){
     measurement->y = uwb_position[1];
     measurement->z = uwb_position[2];
     
-    return true;
 }
 
 void updateErrorModel(float *errorWindow, float *timeWindow, int8_t windowSize, float *errorModel){
