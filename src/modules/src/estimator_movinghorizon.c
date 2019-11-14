@@ -27,7 +27,7 @@
 #include "task.h"
 
 
-// Measurements of a UWB Tx/Rx
+// Measurements of a UWB TDOA
 static xQueueHandle tdoaDataQueue;
 #define UWB_QUEUE_LENGTH (10)
 
@@ -35,6 +35,13 @@ static inline bool stateEstimatorHasTDOAPacket(tdoaMeasurement_t *uwb) {
   return (pdTRUE == xQueueReceive(tdoaDataQueue, uwb, 0));
 }
 
+// Measure of distance to a point (UWB with TWR)
+static xQueueHandle distanceDataQueue;
+#define DIST_QUEUE_LENGTH (10)
+
+static inline bool stateEstimatorHasDistancePacket(distanceMeasurement_t *dist){
+    return (pdTRUE == xQueueReceive(distanceDataQueue, dist, 0));
+}
 
 #define ATTITUDE_UPDATE_RATE RATE_250_HZ
 #define ATTITUDE_UPDATE_DT 1.0f/ATTITUDE_UPDATE_RATE
@@ -60,9 +67,15 @@ void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *pr
 // position calculation with > 3 tdoa measurements (multilateration), directly accesses tdoaDataQueue
 void positionFromTDOAmulti(point_t prediction, point_t *measurement);
 
+// position calculation by projecting prior onto one distance measurement
+void positionFromDistanceSingle(distanceMeasurement_t *dist, point_t *prior, point_t *projection);
+
+// position calculation through multilateration with 4 distance measurements
+void positionFromDistanceMulti(point_t *measurement);
+
 // calculate a new error model [delta_x,delta_vx] based on the positioning errors in errorWindow
 // at the times in timeWindow
-void updateErrorModel(float *errorWindow, float *timeWindow, int8_t windowSize, float *errorModel);
+void updateErrorModel(float *errorWindow, uint32_t *timeWindow, int8_t windowSize, float *errorModel);
 
 // Solves the least squares problem y=mx+b
 // N: Length of Vectors x and y
@@ -70,13 +83,13 @@ void updateErrorModel(float *errorWindow, float *timeWindow, int8_t windowSize, 
 void linearLeastSquares(float *x, float *y, float N, float *params);
 
 static bool isInit = false;
-static bool tdoaUpdate = false;
+static bool measurementUpdate = false;
 static point_t loc_prediction;
 static point_t loc_measurement;
 static velocity_t vel_prediction;
 
 // variables in moving windows
-static float time_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
+static uint32_t time_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dx_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dy_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
  
@@ -115,7 +128,7 @@ void estimatorMovingHorizonInit(void)
     errorModel_y[1] = 0.0f;
 
     isInit = true;
-    tdoaUpdate = false;
+    measurementUpdate = false;
 }
 
 bool estimatorMovingHorizonTest(void)
@@ -162,26 +175,40 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         vel_prediction.x += (-CONST_G*tanf(state->attitude.pitch) - CONST_K_AERO*vel_prediction.x) * POS_UPDATE_DT;
         vel_prediction.x += (CONST_G*tanf(state->attitude.roll) - CONST_K_AERO*vel_prediction.y) * POS_UPDATE_DT;
 
-        time_w[windowSize] = xTaskGetTickCount(); // Do we need to account for wrapping?
-        
+        time_w[windowSize] = xTaskGetTickCount(); // with ARM Cortex M4 and later, could look into using DWT (Data Watchpoint and Trace) for timing at higher accuracy
+        // TODO: should we check how old a measurement is and discard it if its too old?
+        // TODO: can we use the timestamp of the measurement to more accurately do updates (based on single measurements)
+        // QUESTION: How often do we get new measurements?
         if (uxQueueMessagesWaiting(tdoaDataQueue) >= 3){ 
             positionFromTDOAmulti(loc_prediction,&loc_measurement);
-            tdoaUpdate = true;
+            measurementUpdate = true;
         }
         else{
             tdoaMeasurement_t tdoa;
             while (stateEstimatorHasTDOAPacket(&tdoa)){
                 positionFromTDOAsingle(&tdoa,&loc_prediction,&loc_measurement);
-                tdoaUpdate = true;
+                measurementUpdate = true;
+            }
+        }
+
+        if (uxQueueMessagesWaiting(distanceDataQueue) >= 4){ 
+            positionFromDistanceMulti(&loc_measurement);
+            measurementUpdate = true;
+        }
+        else{
+            distanceMeasurement_t dist;
+            while (stateEstimatorHasDistancePacket(&dist)){
+                positionFromDistanceSingle(&dist,&loc_prediction,&loc_measurement);
+                measurementUpdate = true;
             }
         }
               
-        if (tdoaUpdate){
+        if (measurementUpdate){
 
             if (windowSize == MOVING_HORIZON_MAX_WINDOW_SIZE){
                 movingHorizonShiftWindow(dx_w, windowSize);
                 movingHorizonShiftWindow(dy_w, windowSize);
-                movingHorizonShiftWindow(time_w, windowSize);
+                movingHorizonShiftWindow((float *)time_w, windowSize); // This should work time_w contains uint32 (4bytes) and float is 4 bytes as well. It's not pretty though
             }
             else{ 
                 windowSize += 1;
@@ -195,7 +222,7 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
                 updateErrorModel(dy_w, time_w, windowSize, errorModel_y);
             }
 
-            tdoaUpdate = false;
+            measurementUpdate = false;
         }
         // correction of prediction
         state->position.x = loc_prediction.x + errorModel_x[0] + errorModel_x[1] * (time_w[windowSize]-time_w[0]);
@@ -235,6 +262,10 @@ static bool stateEstimatorEnqueueExternalMeasurement(xQueueHandle queue, void *m
 
 bool estimatorMovingHorizonEnqueueTDOA(const tdoaMeasurement_t *uwb){
       return stateEstimatorEnqueueExternalMeasurement(tdoaDataQueue, (void *)uwb);
+}
+
+bool estimatorMovingHorizonEnqueueDistance(const distanceMeasurement_t *dist){
+      return stateEstimatorEnqueueExternalMeasurement(distanceDataQueue, (void *)dist);
 }
 
 void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *projection){
@@ -322,7 +353,7 @@ void positionFromTDOAmulti(point_t prediction, point_t *measurement){
     // get all measurements from queue
     tdoaMeasurement_t tdoa[UWB_QUEUE_LENGTH];
     int8_t tdoa_count = 0;
-    while (stateEstimatorHasTDOAPacket(&tdoa[tdoa_count]) && tdoa_count<UWB_QUEUE_LENGTH){
+    while (tdoa_count<UWB_QUEUE_LENGTH && stateEstimatorHasTDOAPacket(&tdoa[tdoa_count])){
         tdoa_count++;
     }
 
@@ -392,7 +423,85 @@ void positionFromTDOAmulti(point_t prediction, point_t *measurement){
     
 }
 
-void updateErrorModel(float *errorWindow, float *timeWindow, int8_t windowSize, float *errorModel){
+void positionFromDistanceSingle(distanceMeasurement_t *dist, point_t *prior, point_t *projection){
+    float R = dist->distance;
+    float dx = prior->x - dist->x;
+    float dy = prior->y - dist->y;
+    float dz = prior->z - dist->z;
+    
+    float d_A = sqrtf(powf(dx,2) + powf(dy,2) + powf(dz,2));
+    float t = 1- R/d_A;
+
+    projection->x = prior->x - t*dx;
+    projection->y = prior->y - t*dy;
+    projection->z = prior->z - t*dz;
+}
+
+void positionFromDistanceMulti(point_t *measurement){
+    if (uxQueueMessagesWaiting(tdoaDataQueue) <4){ 
+        return;
+    }
+
+    // get all measurements from queue
+    distanceMeasurement_t dist[DIST_QUEUE_LENGTH];
+    int8_t dist_count = 0;
+    while (dist_count<DIST_QUEUE_LENGTH && stateEstimatorHasDistancePacket(&dist[dist_count])){
+        dist_count++;
+    }
+    
+    int8_t i;
+    float x[4],y[4],z[4],d[4];
+    for (i=0; i<4; i++){
+        x[i] = dist[dist_count-i-1].x;
+        y[i] = dist[dist_count-i-1].y;
+        z[i] = dist[dist_count-i-1].z;
+        d[i] = dist[dist_count-i-1].distance;
+    }
+
+    // Problem in form Ax=b --> x=(A' A)-1 A' b
+    float b[4];
+    arm_matrix_instance_f32 b_m = {4, 1, (float *)b};
+    
+    float A[16];
+    arm_matrix_instance_f32 A_m = {4, 4, (float *)A};
+    
+    float x_res[4];
+    arm_matrix_instance_f32 x_res_m ={4, 1, (float *)x_res};
+
+    for (i=0;i<4;i++){
+        b[i] = powf(d[i],2) - powf(x[i],2) - powf(y[i],2) - powf(z[i],2);
+        A[0 + 4*i] = 1;
+        A[1 + 4*i] = -2*x[i];
+        A[2 + 4*i] = -2*y[i];
+        A[3 + 4*i] = -2*z[i];
+    }
+
+    float AT[16];
+    arm_matrix_instance_f32 AT_m = {4, 4, (float *)AT};
+
+    float ATA[16];
+    arm_matrix_instance_f32 ATA_m = {4, 4, (float *)ATA};
+
+    float ATAinv[16];
+    arm_matrix_instance_f32 ATAinv_m = {4, 4, (float *)ATAinv};
+
+    float ATAinvAT[16];
+    arm_matrix_instance_f32 ATAinvAT_m = {4, 4, (float *)ATAinvAT};
+
+    arm_mat_trans_f32(&A_m, &AT_m);                 // A'
+    arm_mat_mult_f32(&AT_m,&A_m,&ATA_m);            // (A'A)
+    arm_mat_inverse_f32(&ATA_m,&ATAinv_m);          // (A'A)-1
+    arm_mat_mult_f32(&ATAinv_m,&AT_m,&ATAinvAT_m);   // (A'A)-1 *A'
+    arm_mat_mult_f32(&ATAinvAT_m,&b_m,&x_res_m);     // x = [(A'A)-1 A]*b 
+
+    // note: x_res[0] = xm^2 + ym^2 + zm^2
+    measurement->x = x_res[1];
+    measurement->y = x_res[2];
+    measurement->z = x_res[3];
+
+}
+
+void updateErrorModel(float *errorWindow, uint32_t *timeWindow, int8_t windowSize, float *errorModel){
     uint8_t i;
     float dt_w[windowSize];
     for (i=0;i<windowSize;i++){

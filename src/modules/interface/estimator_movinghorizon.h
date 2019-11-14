@@ -19,6 +19,7 @@ bool estimatorMovingHorizonTest(void);
 void estimatorMovingHorizon(state_t *state, sensorData_t *sensors, control_t *control, const uint32_t tick);
 
 bool estimatorMovingHorizonEnqueueTDOA(const tdoaMeasurement_t *uwb);
+bool estimatorMovingHorizonEnqueueDistance(const distanceMeasurement_t *dist);
 
 
 #endif
