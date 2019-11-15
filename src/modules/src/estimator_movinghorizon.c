@@ -54,6 +54,7 @@ static inline bool stateEstimatorHasDistancePacket(distanceMeasurement_t *dist){
 #define NEWTON_RAPHSON_THRESHOLD 0.001f
 #define RANSAC_ITERATIONS 5
 #define RANSAC_ERROR_THRESHOLD 0.02f    // Maximum accounted error per timestep when comparing RANSAC iterations
+#define RANSAC_SAMPLES 2            // Number of points used in every RANSAC iteration
 
 #define CONST_G 9.81f
 #define CONST_K_AERO 0.35f
@@ -94,7 +95,6 @@ static float dx_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dy_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
  
 static uint8_t windowSize;
-static float samplingRatio = 0.5;
 
 // Error estimations
 static float errorModel_x[2];
@@ -502,20 +502,22 @@ void positionFromDistanceMulti(point_t *measurement){
 }
 
 void updateErrorModel(float *errorWindow, uint32_t *timeWindow, int8_t windowSize, float *errorModel){
+    // calculate dt vector
     uint8_t i;
     float dt_w[windowSize];
     for (i=0;i<windowSize;i++){
         dt_w[i] = timeWindow[i]-timeWindow[0]; 
     }
 
-    // RANSAC
-    uint8_t N_samples = (uint8_t)floor(windowSize*samplingRatio);
-    if (N_samples < 2) { N_samples = 2; }
-    
+    uint8_t N_samples = RANSAC_SAMPLES;
     uint8_t ransac_idx[N_samples];
+    float sampleErrorModel[2];
+    
+    bool isOutlier[windowSize], isOutlier_best[windowSize];
     float totalError, stepError;
     float bestIteration = windowSize * RANSAC_ERROR_THRESHOLD;
-    float sampleErrorModel[2];
+    
+    // RANSAC
     for (i=0;i<RANSAC_ITERATIONS;i++){
         // select N_sample unique samples
         float dt_s[N_samples], dx_s[N_samples];
@@ -533,22 +535,57 @@ void updateErrorModel(float *errorWindow, uint32_t *timeWindow, int8_t windowSiz
             }
         }
         
-        linearLeastSquares(dt_s, dx_s, N_samples, sampleErrorModel);
+        // Calculate error model based on samples
+        if (N_samples == 2){
+            sampleErrorModel[0] = ( dx_s[0]*dt_s[1] - dx_s[1]*dt_s[0] ) / ( dt_s[1]-dt_s[0] );
+            sampleErrorModel[1] = ( dx_s[1] - dx_s[0] ) / ( dt_s[1] - dt_s[0] );
+        }
+        else{
+            linearLeastSquares(dt_s, dx_s, N_samples, sampleErrorModel);
+        }
 
+        // Calculate performance of error model
         totalError = 0;
         for (j=0;j<windowSize;j++){
             stepError = abs(sampleErrorModel[1] * dt_w[j] + sampleErrorModel[0] - dx_w[j]);
-            if (stepError > RANSAC_ERROR_THRESHOLD){ stepError = RANSAC_ERROR_THRESHOLD; }
-            
+            if (stepError > RANSAC_ERROR_THRESHOLD){ 
+                stepError = RANSAC_ERROR_THRESHOLD;
+                isOutlier[j] = true; 
+            }
+            else{
+                isOutlier[j] = false;
+            }
             totalError += stepError;
         }
 
+        // Update best model if necessary
         if (totalError < bestIteration){
             bestIteration = totalError;
+            for(j=0; j<windowSize; j++){ isOutlier_best[j] = isOutlier[j]; }
             errorModel[0] = sampleErrorModel[0];
             errorModel[1] = sampleErrorModel[1];
         }
     }
+
+    // Recalculate best model with all inliers
+    int8_t inlier_count = 0;
+    for (i=0; i<windowSize; i++){
+        if (!isOutlier_best[i]){
+            inlier_count += 1;
+        }
+    }
+    float dx_in[inlier_count];
+    float dt_in[inlier_count];
+
+    uint8_t count = 0;
+    for (i=0; i<windowSize; i++ ){
+        if (!isOutlier_best[i]){
+            dx_in[count] = dx_w[i];
+            dt_in[count] = dt_w[i];
+            count++;
+        }
+    }
+    linearLeastSquares(dt_in, dx_in, inlier_count, errorModel);
 }
 
 void linearLeastSquares(float *x, float *y, float N, float *params){
