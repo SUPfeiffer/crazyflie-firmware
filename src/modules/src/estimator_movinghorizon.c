@@ -170,6 +170,7 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         positionEstimate(state, sensorData, POS_UPDATE_DT, tick);
         
         // predict current state
+        // TODO: account for yaw!
         loc_prediction.x += vel_prediction.x * POS_UPDATE_DT;
         loc_prediction.y += vel_prediction.y * POS_UPDATE_DT;
         vel_prediction.x += (-CONST_G*tanf(state->attitude.pitch) - CONST_K_AERO*vel_prediction.x) * POS_UPDATE_DT;
