@@ -88,6 +88,7 @@ static bool measurementUpdate = false;
 static point_t loc_prediction;
 static point_t loc_measurement;
 static velocity_t vel_prediction;
+static float pitch_global, roll_global;
 
 // variables in moving windows
 static uint32_t time_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
@@ -115,6 +116,8 @@ void estimatorMovingHorizonInit(void)
     loc_prediction.x = 0.0f; loc_prediction.y = 0.0f; loc_prediction.z = 0.0f;
     loc_measurement.x = 0.0f; loc_measurement.y = 0.0f; loc_measurement.z = 0.0f;
     vel_prediction.x = 0.0f; vel_prediction.y = 0.0f; vel_prediction.z = 0.0f;
+    pitch_global = 0.0f; roll_global = 0.0f;
+
     int8_t i;
     for (i=0;i<MOVING_HORIZON_MAX_WINDOW_SIZE;i++){
         time_w[i] = 0.0f;
@@ -173,8 +176,11 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         // TODO: account for yaw!
         loc_prediction.x += vel_prediction.x * POS_UPDATE_DT;
         loc_prediction.y += vel_prediction.y * POS_UPDATE_DT;
-        vel_prediction.x += (-CONST_G*tanf(state->attitude.pitch) - CONST_K_AERO*vel_prediction.x) * POS_UPDATE_DT;
-        vel_prediction.x += (CONST_G*tanf(state->attitude.roll) - CONST_K_AERO*vel_prediction.y) * POS_UPDATE_DT;
+
+        pitch_global = state->attitude.pitch * cosf(state->attitude.yaw) - state->attitude.roll * sinf(state->attitude.yaw);
+        roll_global = state->attitude.pitch * sinf(state->attitude.yaw) + state->attitude.roll * cosf(state->attitude.yaw);
+        vel_prediction.x = (-CONST_G*tanf(pitch_global) - CONST_K_AERO*state->velocity.x) * POS_UPDATE_DT;
+        vel_prediction.x = (CONST_G*tanf(roll_global) - CONST_K_AERO*state->velocity.y) * POS_UPDATE_DT;
 
         time_w[windowSize] = xTaskGetTickCount(); // with ARM Cortex M4 and later, could look into using DWT (Data Watchpoint and Trace) for timing at higher accuracy
         // TODO: should we check how old a measurement is and discard it if its too old?
@@ -230,6 +236,7 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         state->position.y = loc_prediction.y + errorModel_y[0] + errorModel_y[1] * (time_w[windowSize]-time_w[0]);
         state->velocity.x = vel_prediction.x + errorModel_x[1];
         state->velocity.y = vel_prediction.y + errorModel_y[1];
+
     }
 }
 
