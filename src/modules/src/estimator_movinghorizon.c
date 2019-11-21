@@ -15,6 +15,7 @@
 #include "sensors.h"
 #include "position_estimator.h"
 #include "log.h"
+#include "param.h"
 
 #include <stdlib.h>
 #include <math.h>
@@ -49,7 +50,7 @@ static inline bool stateEstimatorHasDistancePacket(distanceMeasurement_t *dist){
 #define POS_UPDATE_RATE RATE_100_HZ
 #define POS_UPDATE_DT 1.0f/POS_UPDATE_RATE
 
-#define MOVING_HORIZON_MIN_WINDOW_SIZE 4
+#define MOVING_HORIZON_MIN_WINDOW_SIZE 2
 #define MOVING_HORIZON_MAX_WINDOW_SIZE 20
 #define NEWTON_RAPHSON_THRESHOLD 0.001f
 #define RANSAC_ITERATIONS 5
@@ -84,7 +85,9 @@ void updateErrorModel(float *errorWindow, uint32_t *timeWindow, int8_t windowSiz
 void linearLeastSquares(float *x, float *y, float N, float *params);
 
 static bool isInit = false;
+static bool resetEstimator = false;
 static bool measurementUpdate = false;
+static uint32_t time_now;
 static point_t loc_prediction;
 static point_t loc_measurement;
 static velocity_t vel_prediction;
@@ -143,6 +146,9 @@ bool estimatorMovingHorizonTest(void)
 
 void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t *control, const uint32_t tick)
 {
+    // If the client (via a parameter update) triggers an estimator reset:
+    if (resetEstimator) { estimatorMovingHorizonInit(); resetEstimator = false; }
+
     // generate attitude estimate with complementary filter
     sensorsAcquire(sensorData, tick); // Read sensors at full rate (1000Hz)
     if (RATE_DO_EXECUTE(ATTITUDE_UPDATE_RATE, tick)) {
@@ -173,7 +179,6 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         positionEstimate(state, sensorData, POS_UPDATE_DT, tick);
         
         // predict current state
-        // TODO: account for yaw!
         loc_prediction.x += vel_prediction.x * POS_UPDATE_DT;
         loc_prediction.y += vel_prediction.y * POS_UPDATE_DT;
 
@@ -182,7 +187,8 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         vel_prediction.x = (-CONST_G*tanf(pitch_global) - CONST_K_AERO*state->velocity.x) * POS_UPDATE_DT;
         vel_prediction.x = (CONST_G*tanf(roll_global) - CONST_K_AERO*state->velocity.y) * POS_UPDATE_DT;
 
-        time_w[windowSize] = xTaskGetTickCount(); // with ARM Cortex M4 and later, could look into using DWT (Data Watchpoint and Trace) for timing at higher accuracy
+        time_now = xTaskGetTickCount(); // could use usecTimestapm() from usec_time.h (included through freeRTOS.h)
+
         // TODO: should we check how old a measurement is and discard it if its too old?
         // TODO: can we use the timestamp of the measurement to more accurately do updates (based on single measurements)
         // QUESTION: How often do we get new measurements?
@@ -193,7 +199,7 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         else{
             tdoaMeasurement_t tdoa;
             while (stateEstimatorHasTDOAPacket(&tdoa)){
-                positionFromTDOAsingle(&tdoa,&loc_prediction,&loc_measurement);
+                positionFromTDOAsingle(&tdoa,&loc_prediction,&loc_measurement); //should pass state instead of prediction
                 measurementUpdate = true;
             }
         }
@@ -220,7 +226,7 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
             else{ 
                 windowSize += 1;
             }
-            
+            time_w[windowSize] = time_now; 
             dx_w[windowSize] = loc_measurement.x - loc_prediction.x;
             dy_w[windowSize] = loc_measurement.y - loc_prediction.y;
             
@@ -232,8 +238,8 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
             measurementUpdate = false;
         }
         // correction of prediction
-        state->position.x = loc_prediction.x + errorModel_x[0] + errorModel_x[1] * (time_w[windowSize]-time_w[0]);
-        state->position.y = loc_prediction.y + errorModel_y[0] + errorModel_y[1] * (time_w[windowSize]-time_w[0]);
+        state->position.x = loc_prediction.x + errorModel_x[0] + errorModel_x[1] * (time_now-time_w[0]);
+        state->position.y = loc_prediction.y + errorModel_y[0] + errorModel_y[1] * (time_now-time_w[0]);
         state->velocity.x = vel_prediction.x + errorModel_x[1];
         state->velocity.y = vel_prediction.y + errorModel_y[1];
 
@@ -304,32 +310,40 @@ void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *pr
 
     float threshold = NEWTON_RAPHSON_THRESHOLD;
     do{
-        dA = sqrtf(powf(X[0]-x_A[0],2) + powf(X[1]-x_A[1],2) + powf(X[2]-x_A[2],2));
-        dB = sqrtf(powf(X[0]-x_B[0],2) + powf(X[1]-x_B[1],2) + powf(X[2]-x_B[2],2));
+        float dx_A = X[0]-x_A[0];
+        float dy_A = X[1]-x_A[1];
+        float dz_A = X[2]-x_A[2];
+
+        float dx_B = X[0]-x_B[0];
+        float dy_B = X[1]-x_B[1];
+        float dz_B = X[2]-x_B[2];
+
+        dA = sqrtf(powf(dx_A,2) + powf(dy_A,2) + powf(dz_A,2));
+        dB = sqrtf(powf(dx_B,2) + powf(dy_B,2) + powf(dz_B,2));
         // TODO: implement fast inverse sqrt algorithm
         
-        gradS[0] = (X[0]-x_A[0])/dA - (X[0]-x_B[0])/dB;
-        gradS[1] = (X[1]-x_A[1])/dA - (X[1]-x_B[1])/dB;
-        gradS[2] = (X[2]-x_A[2])/dA - (X[2]-x_B[2])/dB;
+        gradS[0] = dx_A/dA - dx_B/dB;
+        gradS[1] = dy_A/dA - dy_B/dB;
+        gradS[2] = dz_A/dA - dz_B/dB;
         
         F[0] = X[0] + X[3]*gradS[0] - prior->x;
         F[1] = X[1] + X[3]*gradS[1] - prior->y;
         F[2] = X[2] + X[3]*gradS[2] - prior->z;
         F[3] = dA - dB - tdoa->distanceDiff;
 
-        J[0] = 1/dA - 1/dB - ( (X[0]-x_A[0])*(X[0]-x_A[0])/powf(dA,3) - (X[0]-x_B[0])*(X[0]-x_A[0])/powf(dB,3) );
-        J[1] =      0      - ( (X[1]-x_A[1])*(X[0]-x_A[0])/powf(dA,3) - (X[1]-x_B[1])*(X[0]-x_B[0])/powf(dB,3) );
-        J[2] =      0      - ( (X[2]-x_A[2])*(X[0]-x_A[0])/powf(dA,3) - (X[2]-x_B[2])*(X[0]-x_B[0])/powf(dB,3) );
+        J[0] = 1 + X[3] * ( ( 1/dA -(dx_A*dx_A)/powf(dA,3) ) - ( 1/dB -(dx_B*dx_B)/powf(dB,3) ) );
+        J[1] = 0 + X[3] * ( (   0  -(dx_A*dy_A)/powf(dA,3) ) - (   0  -(dx_B*dy_B)/powf(dB,3) ) );
+        J[2] = 0 + X[3] * ( (   0  -(dx_A*dz_A)/powf(dA,3) ) - (   0  -(dx_B*dz_B)/powf(dB,3) ) );
         J[3] = gradS[0];
 
         J[4] = J[1];
-        J[5] = 1/dA - 1/dB - ( (X[1]-x_A[1])*(X[1]-x_A[1])/powf(dA,3) - (X[1]-x_B[1])*(X[1]-x_B[1])/powf(dB,3) );
-        J[6] =      0      - ( (X[2]-x_A[2])*(X[1]-x_A[1])/powf(dA,3) - (X[2]-x_B[2])*(X[1]-x_B[1])/powf(dB,3) );
+        J[5] = 1 + X[3] * ( ( 1/dA -(dy_A*dy_A)/powf(dA,3) ) - ( 1/dB -(dy_B*dy_B)/powf(dB,3) ) );
+        J[1] = 0 + X[3] * ( (   0  -(dy_A*dz_A)/powf(dA,3) ) - (   0  -(dy_B*dz_B)/powf(dB,3) ) );
         J[7] = gradS[1];
 
         J[8] = J[2];
         J[9] = J[6];
-        J[10]= 1/dA - 1/dB - ( (X[2]-x_A[2])*(X[2]-x_A[2])/powf(dA,3) - (X[2]-x_B[2])*(X[2]-x_B[2])/powf(dB,3) );
+        J[5] = 1 + X[3] * ( ( 1/dA -(dz_A*dz_A)/powf(dA,3) ) - ( 1/dB -(dz_B*dz_B)/powf(dB,3) ) );
         J[11]= gradS[2];
 
         J[12] = J[3];
@@ -620,6 +634,7 @@ void linearLeastSquares(float *x, float *y, float N, float *params){
 
 // Log group
 LOG_GROUP_START(mhe)
+    LOG_ADD(LOG_UINT8, windowSize, &windowSize)
     LOG_ADD(LOG_FLOAT, uwbX, &loc_measurement.x)
     LOG_ADD(LOG_FLOAT, uwbY, &loc_measurement.y)
     LOG_ADD(LOG_FLOAT, uwbZ, &loc_measurement.z)
@@ -628,3 +643,7 @@ LOG_GROUP_START(mhe)
     LOG_ADD(LOG_FLOAT, dy, &errorModel_y[0])
     LOG_ADD(LOG_FLOAT, dvy, &errorModel_y[1])
 LOG_GROUP_STOP(mhe)
+
+PARAM_GROUP_START(mhe)
+    PARAM_ADD(PARAM_UINT8, resetMHE, &resetEstimator)
+PARAM_GROUP_STOP(mhe)
