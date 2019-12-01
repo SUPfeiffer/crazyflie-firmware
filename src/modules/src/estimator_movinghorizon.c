@@ -309,14 +309,17 @@ void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *pr
     arm_matrix_instance_f32 delta_m ={4, 1, (float *)delta};
 
     float threshold = NEWTON_RAPHSON_THRESHOLD;
+    float dx_A, dy_A, dz_A, dx_B, dy_B, dz_B;
     do{
-        float dx_A = X[0]-x_A[0];
-        float dy_A = X[1]-x_A[1];
-        float dz_A = X[2]-x_A[2];
+        // only necessary to calculate in first iteration, afterwards is taken
+        // care of in the Backtracking line search part (up to F)
+        dx_A = X[0]-x_A[0];
+        dy_A = X[1]-x_A[1];
+        dz_A = X[2]-x_A[2];
 
-        float dx_B = X[0]-x_B[0];
-        float dy_B = X[1]-x_B[1];
-        float dz_B = X[2]-x_B[2];
+        dx_B = X[0]-x_B[0];
+        dy_B = X[1]-x_B[1];
+        dz_B = X[2]-x_B[2];
 
         dA = sqrtf(powf(dx_A,2) + powf(dy_A,2) + powf(dz_A,2));
         dB = sqrtf(powf(dx_B,2) + powf(dy_B,2) + powf(dz_B,2));
@@ -330,6 +333,7 @@ void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *pr
         F[1] = X[1] + X[3]*gradS[1] - prior->y;
         F[2] = X[2] + X[3]*gradS[2] - prior->z;
         F[3] = dA - dB - tdoa->distanceDiff;
+        float normF_old = sqrtf( powf(F[0],2) + powf(F[1],2) + powf(F[2],2) + powf(F[3],0));
 
         J[0] = 1 + X[3] * ( ( 1/dA -(dx_A*dx_A)/powf(dA,3) ) - ( 1/dB -(dx_B*dx_B)/powf(dB,3) ) );
         J[1] = 0 + X[3] * ( (   0  -(dx_A*dy_A)/powf(dA,3) ) - (   0  -(dx_B*dy_B)/powf(dB,3) ) );
@@ -354,10 +358,48 @@ void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *pr
         arm_mat_inverse_f32(&J_m,&Jinv_m);          // J-1(X)
         arm_mat_mult_f32(&Jinv_m,&F_m,&delta_m);     // delta = J-1(X)*F(X)
         
-        X[0] -= delta[0];
-        X[1] -= delta[1];
-        X[2] -= delta[2];
-        X[3] -= delta[3];
+        // Backtracking line search
+        float X_new[4];
+        float alpha = 0.5, i = 0;;
+        float normF_new;
+        do {
+            X_new[0] = X[0] - powf(alpha,i) * delta[0];
+            X_new[1] = X[1] - powf(alpha,i) * delta[1];
+            X_new[3] = X[3] - powf(alpha,i) * delta[3];
+            X_new[2] = X[2] - powf(alpha,i) * delta[2];
+            i += 1;
+            // to optimize, it might be possible to propagate the alpha through the other equations,
+            // to avoid recalculating everything
+            
+            dx_A = X_new[0]-x_A[0];
+            dy_A = X_new[1]-x_A[1];
+            dz_A = X_new[2]-x_A[2];
+
+            dx_B = X_new[0]-x_B[0];
+            dy_B = X_new[1]-x_B[1];
+            dz_B = X_new[2]-x_B[2];
+
+            dA = sqrtf(powf(dx_A,2) + powf(dy_A,2) + powf(dz_A,2));
+            dB = sqrtf(powf(dx_B,2) + powf(dy_B,2) + powf(dz_B,2));
+            // TODO: implement fast inverse sqrt algorithm
+            
+            gradS[0] = dx_A/dA - dx_B/dB;
+            gradS[1] = dy_A/dA - dy_B/dB;
+            gradS[2] = dz_A/dA - dz_B/dB;
+            
+            F[0] = X_new[0] + X_new[3]*gradS[0] - prior->x;
+            F[1] = X_new[1] + X_new[3]*gradS[1] - prior->y;
+            F[2] = X_new[2] + X_new[3]*gradS[2] - prior->z;
+            F[3] = dA - dB - tdoa->distanceDiff;
+                
+            normF_new = sqrtf( powf(F[0],2) + powf(F[1],2) + powf(F[2],2) + powf(F[3],0));
+
+        }while(normF_new > normF_old);
+
+        X[0] = X_new[0];
+        X[1] = X_new[1];
+        X[2] = X_new[2];
+        X[3] = X_new[3];
         
     } while(delta[0] > threshold || delta[1] > threshold || delta[2] > threshold);
     
@@ -567,6 +609,7 @@ void updateErrorModel(float *errorWindow, uint32_t *timeWindow, int8_t windowSiz
         }
 
         // Calculate performance of error model
+        // TODO: Merge x and y error model to combine x&y outlier rejection with mean squared error
         totalError = 0;
         for (j=0;j<windowSize;j++){
             stepError = abs(sampleErrorModel[1] * dt_w[j] + sampleErrorModel[0] - dx_w[j]);
