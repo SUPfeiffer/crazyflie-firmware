@@ -63,17 +63,17 @@ static inline bool stateEstimatorHasDistancePacket(distanceMeasurement_t *dist){
 // shift elements of a 1D array one step up, last element becomes first element
 void circshiftArray(float *array, int arraySize);
 
-// for position with a single tdoa measurement, projects current estimate onto the tdoa measurement surface
-void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *projection);
+// calculate position measurement from single tdoa measurement
+void tdoa2pos_single(tdoaMeasurement_t *tdoa, point_t *prior, point_t *projection);
 
-// position calculation with > 3 tdoa measurements (multilateration), directly accesses tdoaDataQueue
-void positionFromTDOAmulti(point_t prediction, point_t *measurement);
+// calculate position measurement from multiple tdoa measurements (>3)
+void tdoa2pos_multi(point_t prediction, point_t *measurement);
 
-// position calculation by projecting prior onto one distance measurement
-void positionFromDistanceSingle(distanceMeasurement_t *dist, point_t *prior, point_t *projection);
+// calculate position measurement from single distance (twr) measurement
+void dist2pos_single(distanceMeasurement_t *dist, point_t *prior, point_t *projection);
 
-// position calculation through multilateration with 4 distance measurements
-void positionFromDistanceMulti(point_t *measurement);
+// calculate position from 4 distance (twr) measurements
+void dist2pos_multi(point_t *measurement);
 
 // calculate a new error model [delta_x,delta_vx] based on the positioning errors in errorWindow
 // at the times in timeWindow
@@ -193,25 +193,25 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         // TODO: can we use the timestamp of the measurement to more accurately do updates (based on single measurements)
         // QUESTION: How often do we get new measurements?
         if (uxQueueMessagesWaiting(tdoaDataQueue) >= 3){ 
-            positionFromTDOAmulti(loc_prediction,&loc_measurement);
+            tdoa2pos_multi(loc_prediction,&loc_measurement);
             measurementUpdate = true;
         }
         else{
             tdoaMeasurement_t tdoa;
             while (stateEstimatorHasTDOAPacket(&tdoa)){
-                positionFromTDOAsingle(&tdoa,&loc_prediction,&loc_measurement); //should pass state instead of prediction
+                tdoa2pos_single(&tdoa,&loc_prediction,&loc_measurement); //should pass state instead of prediction
                 measurementUpdate = true;
             }
         }
 
         if (uxQueueMessagesWaiting(distanceDataQueue) >= 4){ 
-            positionFromDistanceMulti(&loc_measurement);
+            dist2pos_multi(&loc_measurement);
             measurementUpdate = true;
         }
         else{
             distanceMeasurement_t dist;
             while (stateEstimatorHasDistancePacket(&dist)){
-                positionFromDistanceSingle(&dist,&loc_prediction,&loc_measurement);
+                dist2pos_single(&dist,&loc_prediction,&loc_measurement);
                 measurementUpdate = true;
             }
         }
@@ -286,7 +286,7 @@ bool estimatorMovingHorizonEnqueueDistance(const distanceMeasurement_t *dist){
       return stateEstimatorEnqueueExternalMeasurement(distanceDataQueue, (void *)dist);
 }
 
-void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *projection){
+void tdoa2pos_single(tdoaMeasurement_t *tdoa, point_t *prior, point_t *projection){
     float x_A[3] = {tdoa->anchorPosition[1].x, 
                     tdoa->anchorPosition[1].y, 
                     tdoa->anchorPosition[1].z};
@@ -412,7 +412,7 @@ void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *pr
     projection->z = X[2];
 }
 
-void positionFromTDOAmulti(point_t prediction, point_t *measurement){
+void tdoa2pos_multi(point_t prediction, point_t *measurement){
     
     if (uxQueueMessagesWaiting(tdoaDataQueue) <3){ 
         return;
@@ -491,7 +491,7 @@ void positionFromTDOAmulti(point_t prediction, point_t *measurement){
     
 }
 
-void positionFromDistanceSingle(distanceMeasurement_t *dist, point_t *prior, point_t *projection){
+void dist2pos_single(distanceMeasurement_t *dist, point_t *prior, point_t *projection){
     float R = dist->distance;
     float dx = prior->x - dist->x;
     float dy = prior->y - dist->y;
@@ -505,7 +505,7 @@ void positionFromDistanceSingle(distanceMeasurement_t *dist, point_t *prior, poi
     projection->z = prior->z - t*dz;
 }
 
-void positionFromDistanceMulti(point_t *measurement){
+void dist2pos_multi(point_t *measurement){
     if (uxQueueMessagesWaiting(tdoaDataQueue) <4){ 
         return;
     }
