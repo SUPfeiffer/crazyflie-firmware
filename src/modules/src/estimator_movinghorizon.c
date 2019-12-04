@@ -60,8 +60,8 @@ static inline bool stateEstimatorHasDistancePacket(distanceMeasurement_t *dist){
 #define CONST_G 9.81f
 #define CONST_K_AERO 0.35f
 
-// shift variables in the window by one step
-void movingHorizonShiftWindow(float *window, int windowSize);
+// shift elements of a 1D array one step up, last element becomes first element
+void circshiftArray(float *array, int arraySize);
 
 // for position with a single tdoa measurement, projects current estimate onto the tdoa measurement surface
 void positionFromTDOAsingle(tdoaMeasurement_t *tdoa, point_t *prior, point_t *projection);
@@ -77,7 +77,7 @@ void positionFromDistanceMulti(point_t *measurement);
 
 // calculate a new error model [delta_x,delta_vx] based on the positioning errors in errorWindow
 // at the times in timeWindow
-void updateErrorModel(float *errorWindow, uint32_t *timeWindow, int8_t windowSize, float *errorModel);
+void updateErrorModel(float *errorWindow, float *timeWindow, int8_t windowSize, float *errorModel);
 
 // Solves the least squares problem y=mx+b
 // N: Length of Vectors x and y
@@ -87,14 +87,14 @@ void linearLeastSquares(float *x, float *y, float N, float *params);
 static bool isInit = false;
 static bool resetEstimator = false;
 static bool measurementUpdate = false;
-static uint32_t time_now;
+static float time_now;
 static point_t loc_prediction;
 static point_t loc_measurement;
 static velocity_t vel_prediction;
 static float pitch_global, roll_global;
 
 // variables in moving windows
-static uint32_t time_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
+static float time_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dx_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dy_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
  
@@ -187,7 +187,7 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         vel_prediction.x = (-CONST_G*tanf(pitch_global) - CONST_K_AERO*state->velocity.x) * POS_UPDATE_DT;
         vel_prediction.x = (CONST_G*tanf(roll_global) - CONST_K_AERO*state->velocity.y) * POS_UPDATE_DT;
 
-        time_now = xTaskGetTickCount(); // could use usecTimestapm() from usec_time.h (included through freeRTOS.h)
+        time_now = (float) xTaskGetTickCount()/1000; // could use usecTimestamp() from usec_time.h (included through freeRTOS.h)
 
         // TODO: should we check how old a measurement is and discard it if its too old?
         // TODO: can we use the timestamp of the measurement to more accurately do updates (based on single measurements)
@@ -218,17 +218,17 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
               
         if (measurementUpdate){
 
-            if (windowSize == MOVING_HORIZON_MAX_WINDOW_SIZE){
-                movingHorizonShiftWindow(dx_w, windowSize);
-                movingHorizonShiftWindow(dy_w, windowSize);
-                movingHorizonShiftWindow((float *)time_w, windowSize); // This should work time_w contains uint32 (4bytes) and float is 4 bytes as well. It's not pretty though
-            }
-            else{ 
+            circshiftArray(dx_w, MOVING_HORIZON_MAX_WINDOW_SIZE);
+            circshiftArray(dy_w, MOVING_HORIZON_MAX_WINDOW_SIZE);
+            circshiftArray(time_w, MOVING_HORIZON_MAX_WINDOW_SIZE); 
+            
+            if (windowSize < MOVING_HORIZON_MAX_WINDOW_SIZE){
                 windowSize += 1;
             }
-            time_w[windowSize] = time_now; 
-            dx_w[windowSize] = loc_measurement.x - loc_prediction.x;
-            dy_w[windowSize] = loc_measurement.y - loc_prediction.y;
+
+            time_w[0] = time_now; 
+            dx_w[0] = loc_measurement.x - loc_prediction.x;
+            dy_w[0] = loc_measurement.y - loc_prediction.y;
             
             if (windowSize >= MOVING_HORIZON_MIN_WINDOW_SIZE){
                 updateErrorModel(dx_w, time_w, windowSize, errorModel_x);
@@ -247,11 +247,15 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
 }
 
 
-void movingHorizonShiftWindow(float *window, int windowSize){
+void circshiftArray(float *array, int arraySize){
     uint8_t i;
-    for (i=0; i<windowSize; i++){
-        window[i] = window[i+1];
+    uint8_t last = arraySize - 1;
+    float tmp = array[last];
+
+    for (i=last; i>0; i--){
+        array[i] = array[i-1];
     }
+    array[0] = tmp;
 }
 
 // same function already exist in estimator_kalman.c
@@ -565,12 +569,12 @@ void positionFromDistanceMulti(point_t *measurement){
 
 }
 
-void updateErrorModel(float *errorWindow, uint32_t *timeWindow, int8_t windowSize, float *errorModel){
+void updateErrorModel(float *errorWindow, float *timeWindow, int8_t windowSize, float *errorModel){
     // calculate dt vector
     uint8_t i;
     float dt_w[windowSize];
     for (i=0;i<windowSize;i++){
-        dt_w[i] = timeWindow[i]-timeWindow[0]; 
+        dt_w[i] = timeWindow[i]-timeWindow[windowSize-1]; 
     }
 
     uint8_t N_samples = RANSAC_SAMPLES;
