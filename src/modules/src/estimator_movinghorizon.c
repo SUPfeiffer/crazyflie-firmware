@@ -87,17 +87,14 @@ void linearLeastSquares(float *x, float *y, float N, float *params);
 static bool isInit = false;
 static bool resetEstimator = false;
 static bool measurementUpdate = false;
-static float time_now;
 static point_t loc_prediction;
 static point_t loc_measurement;
 static velocity_t vel_prediction;
-static float pitch_global, roll_global;
 
 // variables in moving windows
 static float time_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dx_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dy_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
- 
 static uint8_t windowSize;
 
 // Error estimations
@@ -119,7 +116,6 @@ void estimatorMovingHorizonInit(void)
     loc_prediction.x = 0.0f; loc_prediction.y = 0.0f; loc_prediction.z = 0.0f;
     loc_measurement.x = 0.0f; loc_measurement.y = 0.0f; loc_measurement.z = 0.0f;
     vel_prediction.x = 0.0f; vel_prediction.y = 0.0f; vel_prediction.z = 0.0f;
-    pitch_global = 0.0f; roll_global = 0.0f;
 
     int8_t i;
     for (i=0;i<MOVING_HORIZON_MAX_WINDOW_SIZE;i++){
@@ -176,23 +172,21 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
 
     if (RATE_DO_EXECUTE(POS_UPDATE_RATE, tick)) {
         // update z position
+        // TODO: include in MHE
         positionEstimate(state, sensorData, POS_UPDATE_DT, tick);
         
         // predict current state
+        float pitch_global = state->attitude.pitch * cosf(state->attitude.yaw) - state->attitude.roll * sinf(state->attitude.yaw);
+        float roll_global = state->attitude.pitch * sinf(state->attitude.yaw) + state->attitude.roll * cosf(state->attitude.yaw);
+
         loc_prediction.x += vel_prediction.x * POS_UPDATE_DT;
         loc_prediction.y += vel_prediction.y * POS_UPDATE_DT;
-
-        pitch_global = state->attitude.pitch * cosf(state->attitude.yaw) - state->attitude.roll * sinf(state->attitude.yaw);
-        roll_global = state->attitude.pitch * sinf(state->attitude.yaw) + state->attitude.roll * cosf(state->attitude.yaw);
         vel_prediction.x = (-CONST_G*tanf(pitch_global) - CONST_K_AERO*state->velocity.x) * POS_UPDATE_DT;
         vel_prediction.x = (CONST_G*tanf(roll_global) - CONST_K_AERO*state->velocity.y) * POS_UPDATE_DT;
 
-        time_now = (float) xTaskGetTickCount()/1000; // could use usecTimestamp() from usec_time.h (included through freeRTOS.h)
-
-        // TODO: should we check how old a measurement is and discard it if its too old?
-        // TODO: can we use the timestamp of the measurement to more accurately do updates (based on single measurements)
-        // QUESTION: How often do we get new measurements?
+        float time_now = (float) xTaskGetTickCount()/1000; // could use usecTimestamp() from usec_time.h (included through freeRTOS.h)
         
+        // get measurements if availabe
         measurementUpdate |= getPosition_tdoaSingle(loc_prediction, &loc_measurement);
         measurementUpdate |= getPosition_tdoaMulti(loc_prediction, &loc_measurement);
         measurementUpdate |= getPosition_twrSingle(loc_prediction, &loc_measurement);
@@ -200,32 +194,32 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
 
               
         if (measurementUpdate){
-
+            // update MHE window
             circshiftArray(dx_w, MOVING_HORIZON_MAX_WINDOW_SIZE);
             circshiftArray(dy_w, MOVING_HORIZON_MAX_WINDOW_SIZE);
             circshiftArray(time_w, MOVING_HORIZON_MAX_WINDOW_SIZE); 
+            
+            dx_w[0] = loc_measurement.x - loc_prediction.x;
+            dy_w[0] = loc_measurement.y - loc_prediction.y;
+            time_w[0] = time_now; 
             
             if (windowSize < MOVING_HORIZON_MAX_WINDOW_SIZE){
                 windowSize += 1;
             }
 
-            time_w[0] = time_now; 
-            dx_w[0] = loc_measurement.x - loc_prediction.x;
-            dy_w[0] = loc_measurement.y - loc_prediction.y;
-            
+            // update error models
             if (windowSize >= MOVING_HORIZON_MIN_WINDOW_SIZE){
                 updateErrorModel(dx_w, time_w, windowSize, errorModel_x);
                 updateErrorModel(dy_w, time_w, windowSize, errorModel_y);
             }
-
             measurementUpdate = false;
         }
-        // correction of prediction
+
+        // correction of the prediction
         state->position.x = loc_prediction.x + errorModel_x[0] + errorModel_x[1] * (time_now-time_w[0]);
         state->position.y = loc_prediction.y + errorModel_y[0] + errorModel_y[1] * (time_now-time_w[0]);
         state->velocity.x = vel_prediction.x + errorModel_x[1];
         state->velocity.y = vel_prediction.y + errorModel_y[1];
-
     }
 }
 
@@ -276,6 +270,7 @@ bool getPosition_tdoaSingle(point_t prediction, point_t *measurement){
     // empty queue and retrieve last tdoa packet
     tdoaMeasurement_t tdoa;
     while (stateEstimatorHasTDOAPacket(&tdoa)){}
+    // TODO: should we check how old a measurement is and discard it if its too old?
     
     float x_A[3] = {tdoa.anchorPosition[1].x, 
                     tdoa.anchorPosition[1].y, 
@@ -489,6 +484,7 @@ bool getPosition_twrSingle(point_t prediction, point_t *measurement){
 
     distanceMeasurement_t dist;
     while (stateEstimatorHasDistancePacket(&dist)){}
+    // TODO: should we check how old a measurement is and discard it if its too old?
 
     float R = dist.distance;
     float dx = prediction.x - dist.x;
