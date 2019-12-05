@@ -59,7 +59,8 @@ static inline bool stateEstimatorHasDistancePacket(distanceMeasurement_t *dist){
 #define CONST_K_AERO 0.35f
 
 // shift elements of a 1D array one step up, last element becomes first element
-void circshiftArray(float *array, int arraySize);
+void circshiftArray_f32(float *array, int arraySize);
+void circshiftArray_uint64(uint64_t *array, int arraySize);
 
 // calculate position measurement from the most recent tdoa measurement in queue
 bool getPosition_tdoaSingle(point_t prediction, point_t *measurement);
@@ -93,7 +94,7 @@ static point_t loc_measurement;
 static velocity_t vel_prediction;
 
 // variables in moving windows
-static float time_w[MAX_WINDOW_SIZE];
+static uint64_t time_w[MAX_WINDOW_SIZE];
 static float dx_w[MAX_WINDOW_SIZE];
 static float dy_w[MAX_WINDOW_SIZE];
 static float dz_w[MAX_WINDOW_SIZE];
@@ -192,8 +193,8 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         vel_prediction.z = state->velocity.z;
 
         //float time_now = (float) xTaskGetTickCount()/1000; // millisecond precision
-        float time_now = (float) usecTimestamp()/1000000; // microsecond precision
-        
+        uint64_t time_now = usecTimestamp(); // microsecond precision
+
         // get measurements if availabe
         measurementUpdate |= getPosition_tdoaSingle(loc_prediction, &loc_measurement);
         measurementUpdate |= getPosition_tdoaMulti(loc_prediction, &loc_measurement);
@@ -203,10 +204,10 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
               
         if (measurementUpdate){
             // update MHE window
-            circshiftArray(dx_w, MAX_WINDOW_SIZE);
-            circshiftArray(dy_w, MAX_WINDOW_SIZE);
-            circshiftArray(dz_w, MAX_WINDOW_SIZE);
-            circshiftArray(time_w, MAX_WINDOW_SIZE); 
+            circshiftArray_f32(dx_w, MAX_WINDOW_SIZE);
+            circshiftArray_f32(dy_w, MAX_WINDOW_SIZE);
+            circshiftArray_f32(dz_w, MAX_WINDOW_SIZE);
+            circshiftArray_uint64(time_w, MAX_WINDOW_SIZE); 
             
             dx_w[0] = loc_measurement.x - loc_prediction.x;
             dy_w[0] = loc_measurement.y - loc_prediction.y;
@@ -226,9 +227,8 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
                 uint8_t i;
                 float dt_w[windowSize];
                 for (i=0;i<windowSize;i++){
-                    dt_w[i] = time_w[i]-time_w[windowSize-1]; 
+                    dt_w[i] = (float)(time_w[i]-time_w[windowSize-1])/1000000.0f; 
                 }
-
                 
                 uint8_t sample_idx[ransac_sampleSize];
                 float sampleModel_x[2], sampleModel_y[2], sampleModel_z[2];
@@ -327,9 +327,10 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         }
 
         // correction of the prediction
-        state->position.x = loc_prediction.x + errorModel_x[0] + errorModel_x[1] * (time_now-time_w[windowSize-1]);
-        state->position.y = loc_prediction.y + errorModel_y[0] + errorModel_y[1] * (time_now-time_w[windowSize-1]);
-        state->position.y = loc_prediction.z + errorModel_z[0] + errorModel_z[1] * (time_now-time_w[windowSize-1]);
+        float delta_t = (float)(time_now-time_w[windowSize-1])/1000000.0f;
+        state->position.x = loc_prediction.x + errorModel_x[0] + errorModel_x[1] * delta_t;
+        state->position.y = loc_prediction.y + errorModel_y[0] + errorModel_y[1] * delta_t;
+        state->position.y = loc_prediction.z + errorModel_z[0] + errorModel_z[1] * delta_t;
         state->velocity.x = vel_prediction.x + errorModel_x[1];
         state->velocity.y = vel_prediction.y + errorModel_y[1];
         state->velocity.y = vel_prediction.z + errorModel_z[1];
@@ -337,7 +338,18 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
 }
 
 
-void circshiftArray(float *array, int arraySize){
+void circshiftArray_f32(float *array, int arraySize){
+    uint8_t i;
+    uint8_t last = arraySize - 1;
+    float tmp = array[last];
+
+    for (i=last; i>0; i--){
+        array[i] = array[i-1];
+    }
+    array[0] = tmp;
+}
+
+void circshiftArray_uint64(uint64_t *array, int arraySize){
     uint8_t i;
     uint8_t last = arraySize - 1;
     float tmp = array[last];
