@@ -191,7 +191,8 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         vel_prediction.y = (CONST_G*tanf(roll_global) - CONST_K_AERO*state->velocity.y) * POS_UPDATE_DT;
         vel_prediction.z = state->velocity.z;
 
-        float time_now = (float) xTaskGetTickCount()/1000; // could use usecTimestamp() from usec_time.h (included through freeRTOS.h)
+        //float time_now = (float) xTaskGetTickCount()/1000; // millisecond precision
+        float time_now = (float) usecTimestamp()/1000000; // microsecond precision
         
         // get measurements if availabe
         measurementUpdate |= getPosition_tdoaSingle(loc_prediction, &loc_measurement);
@@ -214,6 +215,10 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
             
             if (windowSize < MAX_WINDOW_SIZE){
                 windowSize += 1;
+            }
+
+            while (time_w[windowSize-1]-time_w[0] > mhe_timeHorizon){
+                windowSize -= 1;
             }
 
             // update error models
