@@ -95,11 +95,13 @@ static velocity_t vel_prediction;
 static float time_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dx_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static float dy_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
+static float dz_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
 static uint8_t windowSize;
 
 // Error estimations
 static float errorModel_x[2];
 static float errorModel_y[2];
+static float errorModel_z[2];
 
 void estimatorMovingHorizonInit(void)
 {
@@ -122,12 +124,15 @@ void estimatorMovingHorizonInit(void)
         time_w[i] = 0.0f;
         dx_w[i] = 0.0f;
         dy_w[i] = 0.0f;
+        dz_w[i] = 0.0f;
     }
     windowSize = 0;
     errorModel_x[0] = 0.0f;
     errorModel_x[1] = 0.0f;
     errorModel_y[0] = 0.0f;
     errorModel_y[1] = 0.0f;
+    errorModel_z[0] = 0.0f;
+    errorModel_z[1] = 0.0f;
 
     isInit = true;
     measurementUpdate = false;
@@ -171,8 +176,7 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
     }
 
     if (RATE_DO_EXECUTE(POS_UPDATE_RATE, tick)) {
-        // update z position
-        // TODO: include in MHE
+        // update z position with baro
         positionEstimate(state, sensorData, POS_UPDATE_DT, tick);
         
         // predict current state
@@ -181,8 +185,10 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
 
         loc_prediction.x += vel_prediction.x * POS_UPDATE_DT;
         loc_prediction.y += vel_prediction.y * POS_UPDATE_DT;
+        loc_prediction.z += state->position.z;
         vel_prediction.x = (-CONST_G*tanf(pitch_global) - CONST_K_AERO*state->velocity.x) * POS_UPDATE_DT;
-        vel_prediction.x = (CONST_G*tanf(roll_global) - CONST_K_AERO*state->velocity.y) * POS_UPDATE_DT;
+        vel_prediction.y = (CONST_G*tanf(roll_global) - CONST_K_AERO*state->velocity.y) * POS_UPDATE_DT;
+        vel_prediction.z = state->velocity.z;
 
         float time_now = (float) xTaskGetTickCount()/1000; // could use usecTimestamp() from usec_time.h (included through freeRTOS.h)
         
@@ -197,10 +203,12 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
             // update MHE window
             circshiftArray(dx_w, MOVING_HORIZON_MAX_WINDOW_SIZE);
             circshiftArray(dy_w, MOVING_HORIZON_MAX_WINDOW_SIZE);
+            circshiftArray(dz_w, MOVING_HORIZON_MAX_WINDOW_SIZE);
             circshiftArray(time_w, MOVING_HORIZON_MAX_WINDOW_SIZE); 
             
             dx_w[0] = loc_measurement.x - loc_prediction.x;
             dy_w[0] = loc_measurement.y - loc_prediction.y;
+            dz_w[0] = loc_measurement.z - loc_prediction.z;
             time_w[0] = time_now; 
             
             if (windowSize < MOVING_HORIZON_MAX_WINDOW_SIZE){
@@ -211,15 +219,18 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
             if (windowSize >= MOVING_HORIZON_MIN_WINDOW_SIZE){
                 updateErrorModel(dx_w, time_w, windowSize, errorModel_x);
                 updateErrorModel(dy_w, time_w, windowSize, errorModel_y);
+                updateErrorModel(dz_w, time_w, windowSize, errorModel_z);
             }
             measurementUpdate = false;
         }
 
         // correction of the prediction
-        state->position.x = loc_prediction.x + errorModel_x[0] + errorModel_x[1] * (time_now-time_w[0]);
-        state->position.y = loc_prediction.y + errorModel_y[0] + errorModel_y[1] * (time_now-time_w[0]);
+        state->position.x = loc_prediction.x + errorModel_x[0] + errorModel_x[1] * (time_now-time_w[windowSize]);
+        state->position.y = loc_prediction.y + errorModel_y[0] + errorModel_y[1] * (time_now-time_w[windowSize]);
+        state->position.y = loc_prediction.z + errorModel_z[0] + errorModel_z[1] * (time_now-time_w[windowSize]);
         state->velocity.x = vel_prediction.x + errorModel_x[1];
         state->velocity.y = vel_prediction.y + errorModel_y[1];
+        state->velocity.y = vel_prediction.z + errorModel_z[1];
     }
 }
 
