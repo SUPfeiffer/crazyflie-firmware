@@ -50,11 +50,10 @@ static inline bool stateEstimatorHasDistancePacket(distanceMeasurement_t *dist){
 #define POS_UPDATE_RATE RATE_100_HZ
 #define POS_UPDATE_DT 1.0f/POS_UPDATE_RATE
 
-#define MOVING_HORIZON_MAX_WINDOW_SIZE 20
+
 #define NEWTON_RAPHSON_THRESHOLD 0.001f
-#define RANSAC_ITERATIONS 5
-#define RANSAC_ERROR_THRESHOLD 0.02f    // Maximum accounted error per timestep when comparing RANSAC iterations
-#define RANSAC_SAMPLES 2            // Number of points used in every RANSAC iteration
+#define MAX_WINDOW_SIZE 20
+
 
 #define CONST_G 9.81f
 #define CONST_K_AERO 0.35f
@@ -79,18 +78,25 @@ bool getPosition_twrMulti(point_t *measurement);
 // params[2] = [b,m]
 void linearLeastSquares(float *x, float *y, float N, float *params);
 
-static bool isInit = false;
+// Parameters
 static bool resetEstimator = false;
+static float mhe_timeHorizon = 2.0f;
+static uint8_t ransac_iter = 5;
+static uint8_t ransac_sampleSize = 2; 
+static float ransac_outlierThreshold = 0.02;
+static float ransac_prior_pv = 0;
+
+static bool isInit = false;
 static bool measurementUpdate = false;
 static point_t loc_prediction;
 static point_t loc_measurement;
 static velocity_t vel_prediction;
 
 // variables in moving windows
-static float time_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
-static float dx_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
-static float dy_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
-static float dz_w[MOVING_HORIZON_MAX_WINDOW_SIZE];
+static float time_w[MAX_WINDOW_SIZE];
+static float dx_w[MAX_WINDOW_SIZE];
+static float dy_w[MAX_WINDOW_SIZE];
+static float dz_w[MAX_WINDOW_SIZE];
 static uint8_t windowSize;
 
 // Error estimations
@@ -115,7 +121,7 @@ void estimatorMovingHorizonInit(void)
     vel_prediction.x = 0.0f; vel_prediction.y = 0.0f; vel_prediction.z = 0.0f;
 
     int8_t i;
-    for (i=0;i<MOVING_HORIZON_MAX_WINDOW_SIZE;i++){
+    for (i=0;i<MAX_WINDOW_SIZE;i++){
         time_w[i] = 0.0f;
         dx_w[i] = 0.0f;
         dy_w[i] = 0.0f;
@@ -196,22 +202,22 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
               
         if (measurementUpdate){
             // update MHE window
-            circshiftArray(dx_w, MOVING_HORIZON_MAX_WINDOW_SIZE);
-            circshiftArray(dy_w, MOVING_HORIZON_MAX_WINDOW_SIZE);
-            circshiftArray(dz_w, MOVING_HORIZON_MAX_WINDOW_SIZE);
-            circshiftArray(time_w, MOVING_HORIZON_MAX_WINDOW_SIZE); 
+            circshiftArray(dx_w, MAX_WINDOW_SIZE);
+            circshiftArray(dy_w, MAX_WINDOW_SIZE);
+            circshiftArray(dz_w, MAX_WINDOW_SIZE);
+            circshiftArray(time_w, MAX_WINDOW_SIZE); 
             
             dx_w[0] = loc_measurement.x - loc_prediction.x;
             dy_w[0] = loc_measurement.y - loc_prediction.y;
             dz_w[0] = loc_measurement.z - loc_prediction.z;
             time_w[0] = time_now; 
             
-            if (windowSize < MOVING_HORIZON_MAX_WINDOW_SIZE){
+            if (windowSize < MAX_WINDOW_SIZE){
                 windowSize += 1;
             }
 
             // update error models
-            if (windowSize >= RANSAC_SAMPLES){
+            if (windowSize >= ransac_sampleSize){
                 uint8_t i;
                 float dt_w[windowSize];
                 for (i=0;i<windowSize;i++){
@@ -219,20 +225,20 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
                 }
 
                 
-                uint8_t sample_idx[RANSAC_SAMPLES];
+                uint8_t sample_idx[ransac_sampleSize];
                 float sampleModel_x[2], sampleModel_y[2], sampleModel_z[2];
                 
                 bool isOutlier[windowSize], isOutlier_best[windowSize];
                 float totalError, stepError;
-                float totalError_best = windowSize * RANSAC_ERROR_THRESHOLD;
+                float totalError_best = windowSize * ransac_outlierThreshold;
                 
 
-                for (i=0;i<RANSAC_ITERATIONS;i++){
+                for (i=0;i<ransac_iter;i++){
                     // select N_sample unique samples
-                    float dt_s[RANSAC_SAMPLES], dx_s[RANSAC_SAMPLES], 
-                            dy_s[RANSAC_SAMPLES], dz_s[RANSAC_SAMPLES];
+                    float dt_s[ransac_sampleSize], dx_s[ransac_sampleSize], 
+                            dy_s[ransac_sampleSize], dz_s[ransac_sampleSize];
                     uint8_t j = 0;
-                    while(j<RANSAC_SAMPLES){
+                    while(j<ransac_sampleSize){
                         sample_idx[j] = (uint8_t)floor(windowSize * rand()/RAND_MAX );
                         bool isUnique = true;
                         for(int8_t k=0;k<j;k++){
@@ -248,7 +254,7 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
                     }
                     
                     // Calculate error model based on samples
-                    if (RANSAC_SAMPLES == 2){
+                    if (ransac_sampleSize == 2){
                         sampleModel_x[0] = ( dx_s[0]*dt_s[1] - dx_s[1]*dt_s[0] ) / ( dt_s[1]-dt_s[0] );
                         sampleModel_x[1] = ( dx_s[1] - dx_s[0] ) / ( dt_s[1] - dt_s[0] );
                         sampleModel_y[0] = ( dy_s[0]*dt_s[1] - dy_s[1]*dt_s[0] ) / ( dt_s[1]-dt_s[0] );
@@ -257,9 +263,9 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
                         sampleModel_z[1] = ( dz_s[1] - dz_s[0] ) / ( dt_s[1] - dt_s[0] );
                     }
                     else{
-                        linearLeastSquares(dt_s, dx_s, RANSAC_SAMPLES, sampleModel_x);
-                        linearLeastSquares(dt_s, dy_s, RANSAC_SAMPLES, sampleModel_y);
-                        linearLeastSquares(dt_s, dz_s, RANSAC_SAMPLES, sampleModel_z);
+                        linearLeastSquares(dt_s, dx_s, ransac_sampleSize, sampleModel_x);
+                        linearLeastSquares(dt_s, dy_s, ransac_sampleSize, sampleModel_y);
+                        linearLeastSquares(dt_s, dz_s, ransac_sampleSize, sampleModel_z);
                     }
 
                     // Calculate performance of error model
@@ -268,8 +274,8 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
                         stepError = sqrtf(powf(sampleModel_x[1] * dt_w[j] + sampleModel_x[0] - dx_w[j],2)
                                         + powf(sampleModel_y[1] * dt_w[j] + sampleModel_y[0] - dy_w[j],2)
                                         + powf(sampleModel_z[1] * dt_w[j] + sampleModel_z[0] - dz_w[j],2) );
-                        if (stepError > RANSAC_ERROR_THRESHOLD){ 
-                            stepError = RANSAC_ERROR_THRESHOLD;
+                        if (stepError > ransac_outlierThreshold){ 
+                            stepError = ransac_outlierThreshold;
                             isOutlier[j] = true; 
                         }
                         else{
@@ -703,4 +709,9 @@ LOG_GROUP_STOP(mhe)
 
 PARAM_GROUP_START(mhe)
     PARAM_ADD(PARAM_UINT8, resetMHE, &resetEstimator)
+    PARAM_ADD(PARAM_FLOAT, timeHorizon, &mhe_timeHorizon)
+    PARAM_ADD(PARAM_UINT8, ransacIterations, &ransac_iter)
+    PARAM_ADD(PARAM_UINT8, ransac_sampleSize, &ransac_sampleSize)
+    PARAM_ADD(PARAM_FLOAT, outlierThreshold, &ransac_outlierThreshold)
+    PARAM_ADD(PARAM_FLOAT, ransacPrior_pv, &ransac_prior_pv)
 PARAM_GROUP_STOP(mhe)
