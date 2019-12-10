@@ -80,7 +80,7 @@ bool getPosition_twrMulti(point_t *measurement);
 // Solves the least squares problem y=mx+b
 // N: Length of Vectors x and y
 // params[2] = [b,m]
-void linearLeastSquares(float *x, float *y, float N, float *params);
+void weightedLeastSquares(float *x, float *y, float N, float pv, float *params);
 
 // Parameters
 static bool resetEstimator = false;
@@ -255,19 +255,9 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
                     }
                     
                     // Calculate error model based on samples
-                    if (ransac_sampleSize == 2){
-                        sampleModel_x[0] = ( dx_s[0]*dt_s[1] - dx_s[1]*dt_s[0] ) / ( dt_s[1]-dt_s[0] );
-                        sampleModel_x[1] = ( dx_s[1] - dx_s[0] ) / ( dt_s[1] - dt_s[0] );
-                        sampleModel_y[0] = ( dy_s[0]*dt_s[1] - dy_s[1]*dt_s[0] ) / ( dt_s[1]-dt_s[0] );
-                        sampleModel_y[1] = ( dy_s[1] - dy_s[0] ) / ( dt_s[1] - dt_s[0] );
-                        sampleModel_z[0] = ( dz_s[0]*dt_s[1] - dz_s[1]*dt_s[0] ) / ( dt_s[1]-dt_s[0] );
-                        sampleModel_z[1] = ( dz_s[1] - dz_s[0] ) / ( dt_s[1] - dt_s[0] );
-                    }
-                    else{
-                        linearLeastSquares(dt_s, dx_s, ransac_sampleSize, sampleModel_x);
-                        linearLeastSquares(dt_s, dy_s, ransac_sampleSize, sampleModel_y);
-                        linearLeastSquares(dt_s, dz_s, ransac_sampleSize, sampleModel_z);
-                    }
+                    weightedLeastSquares(dt_s, dx_s, ransac_sampleSize, ransac_prior_pv, sampleModel_x);
+                    weightedLeastSquares(dt_s, dy_s, ransac_sampleSize, ransac_prior_pv, sampleModel_y);
+                    weightedLeastSquares(dt_s, dz_s, ransac_sampleSize, ransac_prior_pv, sampleModel_z);
 
                     // Calculate performance of error model
                     totalError = 0;
@@ -315,9 +305,9 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
                         j++;
                     }
                 }
-                linearLeastSquares(dt_in, dx_in, inlier_count, errorModel_x);
-                linearLeastSquares(dt_in, dy_in, inlier_count, errorModel_y);
-                linearLeastSquares(dt_in, dz_in, inlier_count, errorModel_z);
+                weightedLeastSquares(dt_in, dx_in, inlier_count, ransac_prior_pv, errorModel_x);
+                weightedLeastSquares(dt_in, dy_in, inlier_count, ransac_prior_pv, errorModel_y);
+                weightedLeastSquares(dt_in, dz_in, inlier_count, ransac_prior_pv, errorModel_z);
             }
             measurementUpdate = false;
         }
@@ -698,8 +688,8 @@ bool getPosition_twrMulti(point_t *measurement){
 
 }
 
-void linearLeastSquares(float *x, float *y, float N, float *params){
-    // Linear Least Squares (no RANSAC)
+void weightedLeastSquares(float *x, float *y, float N, float pv, float *params){
+
     float sumX = 0.0f;
     float sumX2 = 0.0f;
     float sumY = 0.0f;
@@ -713,9 +703,9 @@ void linearLeastSquares(float *x, float *y, float N, float *params){
         sumXY += x[i] * y[i];
     }
 
-    float denom = N * sumX2 - powf(sumX,2);
+    float denom = N * (sumX2 + pv) - powf(sumX,2);
     
-    params[0] = (sumX2 * sumY - sumXY * sumX) / denom;
+    params[0] = ((sumX2 + pv) * sumY - sumXY * sumX) / denom;
     params[1] = (N * sumXY - sumX * sumY) / denom;
 }
 
