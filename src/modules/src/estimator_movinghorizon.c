@@ -62,6 +62,9 @@ static inline bool stateEstimatorHasDistancePacket(distanceMeasurement_t *dist){
 void circshiftArray_f32(float *array, int arraySize);
 void circshiftArray_uint64(uint64_t *array, int arraySize);
 
+// get a set of random integers between 0 and max_idx (inclusive)
+void getSampleIndices(uint8_t qty, uint8_t max_idx, uint8_t *return_idx);
+
 // calculate position measurement from the most recent tdoa measurement in queue
 bool getPosition_tdoaSingle(point_t prediction, point_t *measurement);
 
@@ -87,12 +90,13 @@ static uint8_t ransac_sampleSize = 2;
 static float ransac_outlierThreshold = 0.02;
 static float ransac_prior_pv = 0;
 
+// Estimator Variables
 static bool isInit = false;
 static bool measurementUpdate = false;
 static point_t loc_prediction;
 static point_t loc_measurement;
 static velocity_t vel_prediction;
-
+ 
 // variables in moving windows
 static uint64_t time_w[MAX_WINDOW_SIZE];
 static float dx_w[MAX_WINDOW_SIZE];
@@ -197,13 +201,13 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
 
         // get measurements if availabe
         measurementUpdate |= getPosition_tdoaSingle(loc_prediction, &loc_measurement);
-        measurementUpdate |= getPosition_tdoaMulti(loc_prediction, &loc_measurement);
+        //measurementUpdate |= getPosition_tdoaMulti(loc_prediction, &loc_measurement);
         measurementUpdate |= getPosition_twrSingle(loc_prediction, &loc_measurement);
-        measurementUpdate |= getPosition_twrMulti(&loc_measurement);
+        //measurementUpdate |= getPosition_twrMulti(&loc_measurement);
 
               
         if (measurementUpdate){
-            // update MHE window
+            // update MHE windows
             circshiftArray_f32(dx_w, MAX_WINDOW_SIZE);
             circshiftArray_f32(dy_w, MAX_WINDOW_SIZE);
             circshiftArray_f32(dz_w, MAX_WINDOW_SIZE);
@@ -217,45 +221,37 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
             if (windowSize < MAX_WINDOW_SIZE){
                 windowSize += 1;
             }
-
             while (time_w[windowSize-1]-time_w[0] > mhe_timeHorizon){
                 windowSize -= 1;
+            }
+            
+            float dt_w[windowSize];
+            uint8_t i;
+            for (i=0; i<windowSize; i++){
+                dt_w[i] = (float)(time_w[i]-time_w[windowSize-1])/1000000.0f; 
             }
 
             // update error models
             if (windowSize >= ransac_sampleSize){
-                uint8_t i;
-                float dt_w[windowSize];
-                for (i=0;i<windowSize;i++){
-                    dt_w[i] = (float)(time_w[i]-time_w[windowSize-1])/1000000.0f; 
-                }
-                
-                uint8_t sample_idx[ransac_sampleSize];
                 float sampleModel_x[2], sampleModel_y[2], sampleModel_z[2];
-                
                 bool isOutlier[windowSize], isOutlier_best[windowSize];
                 float totalError, stepError;
                 float totalError_best = windowSize * ransac_outlierThreshold;
                 
-
-                for (i=0;i<ransac_iter;i++){
+                uint8_t i,j;
+                for (i=0; i<ransac_iter; i++){
+                    
                     // select N_sample unique samples
+                    uint8_t sample_idx[ransac_sampleSize];
                     float dt_s[ransac_sampleSize], dx_s[ransac_sampleSize], 
                             dy_s[ransac_sampleSize], dz_s[ransac_sampleSize];
-                    uint8_t j = 0;
-                    while(j<ransac_sampleSize){
-                        sample_idx[j] = (uint8_t)floor(windowSize * rand()/RAND_MAX );
-                        bool isUnique = true;
-                        for(int8_t k=0;k<j;k++){
-                            isUnique &= (sample_idx[j] != sample_idx[k]);
-                        }
-                        if (isUnique){
-                            dt_s[j] = dt_w[sample_idx[j]];
-                            dx_s[j] = dx_w[sample_idx[j]];
-                            dy_s[j] = dy_w[sample_idx[j]];
-                            dz_s[j] = dz_w[sample_idx[j]];
-                            j++;
-                        }
+                    
+                    getSampleIndices(ransac_sampleSize, windowSize, &sample_idx);
+                    for(j=0; j<ransac_sampleSize; j++){
+                        dt_s[j] = dt_w[sample_idx[j]];
+                        dx_s[j] = dx_w[sample_idx[j]];
+                        dy_s[j] = dy_w[sample_idx[j]];
+                        dz_s[j] = dz_w[sample_idx[j]];
                     }
                     
                     // Calculate error model based on samples
@@ -330,10 +326,10 @@ void estimatorMovingHorizon(state_t *state, sensorData_t *sensorData, control_t 
         float delta_t = (float)(time_now-time_w[windowSize-1])/1000000.0f;
         state->position.x = loc_prediction.x + errorModel_x[0] + errorModel_x[1] * delta_t;
         state->position.y = loc_prediction.y + errorModel_y[0] + errorModel_y[1] * delta_t;
-        state->position.y = loc_prediction.z + errorModel_z[0] + errorModel_z[1] * delta_t;
+        state->position.z = loc_prediction.z + errorModel_z[0] + errorModel_z[1] * delta_t;
         state->velocity.x = vel_prediction.x + errorModel_x[1];
         state->velocity.y = vel_prediction.y + errorModel_y[1];
-        state->velocity.y = vel_prediction.z + errorModel_z[1];
+        state->velocity.z = vel_prediction.z + errorModel_z[1];
     }
 }
 
@@ -358,6 +354,18 @@ void circshiftArray_uint64(uint64_t *array, int arraySize){
         array[i] = array[i-1];
     }
     array[0] = tmp;
+}
+
+void getSampleIndices(uint8_t qty, uint8_t max_idx, uint8_t *return_idx){
+    int8_t i;
+    for(i=0; i<qty; i++){
+        return_idx[i] = (uint8_t)floorf(max_idx * (float)rand()/((float)RAND_MAX + 1) );
+        bool isUnique = true;
+        int8_t j;
+        for(j=0; j<i; j++){
+            isUnique &= (return_idx[i] != return_idx[j]);
+        }
+    }
 }
 
 // same function already exist in estimator_kalman.c
