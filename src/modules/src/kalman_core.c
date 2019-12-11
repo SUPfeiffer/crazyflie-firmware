@@ -363,8 +363,14 @@ void kalmanCoreUpdateWithPose(kalmanCoreData_t* this, poseMeasurement_t *pose)
   }
 }
 
+static point_t twr_anchor;
+static float twr_distance;
 void kalmanCoreUpdateWithDistance(kalmanCoreData_t* this, distanceMeasurement_t *d)
 {
+  twr_anchor.x = d->x;
+  twr_anchor.y = d->y;
+  twr_anchor.z = d->z;
+  twr_distance = d->distance;
   // a measurement of distance to point (x, y, z)
   float h[KC_STATE_DIM] = {0};
   arm_matrix_instance_f32 H = {1, KC_STATE_DIM, h};
@@ -394,9 +400,17 @@ void kalmanCoreUpdateWithDistance(kalmanCoreData_t* this, distanceMeasurement_t 
   scalarUpdate(this, &H, measuredDistance-predictedDistance, d->stdDev);
 }
 
-
+// variables for tdoa loging
+static point_t tdoa_a1;
+static point_t tdoa_a2;
+static float tdoa_distDiff;
 void kalmanCoreUpdateWithTDOA(kalmanCoreData_t* this, tdoaMeasurement_t *tdoa)
 {
+
+  tdoa_a1 = tdoa->anchorPosition[0];
+  tdoa_a2 = tdoa->anchorPosition[1];
+  tdoa_distDiff = tdoa->distanceDiff;
+
   if (tdoaCount >= 100)
   {
     /**
@@ -1137,3 +1151,20 @@ PARAM_GROUP_START(kalman)
   PARAM_ADD(PARAM_FLOAT, initialZ, &initialZ)
   PARAM_ADD(PARAM_FLOAT, initialYaw, &initialYaw)
 PARAM_GROUP_STOP(kalman)
+
+LOG_GROUP_START(tdoa)
+  LOG_ADD(LOG_FLOAT, a1_x, &tdoa_a1.x)
+  LOG_ADD(LOG_FLOAT, a1_y, &tdoa_a1.y)
+  LOG_ADD(LOG_FLOAT, a1_z, &tdoa_a1.z)
+  LOG_ADD(LOG_FLOAT, a2_x, &tdoa_a2.x)
+  LOG_ADD(LOG_FLOAT, a2_y, &tdoa_a2.y)
+  LOG_ADD(LOG_FLOAT, a2_z, &tdoa_a2.z)
+  LOG_ADD(LOG_FLOAT, distDiff, &tdoa_distDiff)
+LOG_GROUP_STOP(tdoa)
+
+LOG_GROUP_START(twr)
+  LOG_ADD(LOG_FLOAT,a_x, &twr_anchor.x)
+  LOG_ADD(LOG_FLOAT,a_y, &twr_anchor.y)
+  LOG_ADD(LOG_FLOAT,a_z, &twr_anchor.z)
+  LOG_ADD(LOG_FLOAT,dist, &twr_distance)
+LOG_GROUP_STOP(twr)
