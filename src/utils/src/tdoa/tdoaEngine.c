@@ -67,6 +67,11 @@ static uint64_t truncateToAnchorTimeStamp(uint64_t fullTimeStamp) {
   return fullTimeStamp & TRUNCATE_TO_ANCHOR_TS_BITMAP;
 }
 
+// logging variables
+static uint8_t tdoa_anchorID_0;
+static uint8_t tdoa_anchorID_1;
+static float tdoa_distDiff;
+
 static void enqueueTDOA(const tdoaAnchorContext_t* anchorACtx, const tdoaAnchorContext_t* anchorBCtx, double distanceDiff, tdoaEngineState_t* engineState) {
   tdoaStats_t* stats = &engineState->stats;
 
@@ -76,6 +81,11 @@ static void enqueueTDOA(const tdoaAnchorContext_t* anchorACtx, const tdoaAnchorC
   };
 
   if (tdoaStorageGetAnchorPosition(anchorACtx, &tdoa.anchorPosition[0]) && tdoaStorageGetAnchorPosition(anchorBCtx, &tdoa.anchorPosition[1])) {
+      tdoa_anchorID_0 = tdoaStorageGetId(anchorACtx);
+      tdoa_anchorID_1 = tdoaStorageGetId(anchorBCtx);
+      tdoa_distDiff = distanceDiff;
+      
+      
       STATS_CNT_RATE_EVENT(&stats->packetsToEstimator);
       engineState->sendTdoaToEstimator(&tdoa);
 
@@ -87,6 +97,7 @@ static void enqueueTDOA(const tdoaAnchorContext_t* anchorACtx, const tdoaAnchorC
       if (idB == stats->anchorId && idA == stats->remoteAnchorId) {
         stats->tdoa = -distanceDiff;
       }
+      
   }
 }
 
@@ -184,3 +195,9 @@ void tdoaEngineProcessPacket(tdoaEngineState_t* engineState, tdoaAnchorContext_t
     }
   }
 }
+
+LOG_GROUP_START(uwb_tdoa)
+  LOG_ADD(LOG_UINT8, a0_id, &tdoa_anchorID_0)
+  LOG_ADD(LOG_UINT8, a1_id, &tdoa_anchorID_1)
+  LOG_ADD(LOG_FLOAT, distDiff, &tdoa_distDiff)
+LOG_GROUP_STOP(uwb_tdoa)
