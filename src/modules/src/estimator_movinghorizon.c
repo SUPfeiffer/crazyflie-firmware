@@ -473,7 +473,8 @@ bool getPosition_tdoaSingle(point_t prediction, point_t *measurement){
         arm_mat_mult_f32(&Jinv_m,&F_m,&delta_m);     // delta = J-1(X)*F(X)
         
         float X_new[4];
-        float alpha = 0.5, i = 0;;
+        float alpha = 0.5;
+        uint8_t i = 0;
         float normF_new;
         do {
             X_new[0] = X[0] - powf(alpha,i) * delta[0];
@@ -507,13 +508,18 @@ bool getPosition_tdoaSingle(point_t prediction, point_t *measurement){
                 
             normF_new = sqrtf( powf(F[0],2) + powf(F[1],2) + powf(F[2],2) + powf(F[3],0));
 
-        } while(normF_new > normF_old);
+        } while(normF_new > normF_old && i <= 5);
+        // due to numerical imprecisions when F_new approaches F, the loop can get stuck
+        // in that case we terminate after 5 iterations
 
         X[0] = X_new[0];
         X[1] = X_new[1];
         X[2] = X_new[2];
         X[3] = X_new[3];
         
+        // break if the inner loop gets terminated due to timeout
+        if (i>5){ break; }
+
     } while(delta[0] > threshold || delta[1] > threshold || delta[2] > threshold);
     
     measurement->x = X[0];
