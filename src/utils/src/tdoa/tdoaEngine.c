@@ -196,8 +196,8 @@ void tdoaEngineProcessPacket(tdoaEngineState_t* engineState, tdoaAnchorContext_t
   }
 }
 
-LOG_GROUP_START(uwb_tdoa)
-  LOG_ADD(LOG_UINT8, a0_id, &tdoa_anchorID_0)
-  LOG_ADD(LOG_UINT8, a1_id, &tdoa_anchorID_1)
+LOG_GROUP_START(uwbTdoa)
+  LOG_ADD(LOG_UINT8, a0id, &tdoa_anchorID_0)
+  LOG_ADD(LOG_UINT8, a1id, &tdoa_anchorID_1)
   LOG_ADD(LOG_FLOAT, distDiff, &tdoa_distDiff)
-LOG_GROUP_STOP(uwb_tdoa)
+LOG_GROUP_STOP(uwbTdoa)
