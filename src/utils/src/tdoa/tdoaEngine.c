@@ -72,6 +72,16 @@ static uint8_t tdoa_anchorID_0;
 static uint8_t tdoa_anchorID_1;
 static float tdoa_distDiff;
 
+static float tdoaLog[4][4] = {{0.0f}};
+static void addToLogTDOA3(int anchorA, int anchorB, float distDiff){
+  if (anchorA < anchorB){
+    tdoaLog[anchorA][anchorB] = distDiff;
+  }
+  else
+  {
+    tdoaLog[anchorB][anchorA] = -distDiff;
+  }
+}
 static void enqueueTDOA(const tdoaAnchorContext_t* anchorACtx, const tdoaAnchorContext_t* anchorBCtx, double distanceDiff, tdoaEngineState_t* engineState) {
   tdoaStats_t* stats = &engineState->stats;
 
@@ -91,6 +101,7 @@ static void enqueueTDOA(const tdoaAnchorContext_t* anchorACtx, const tdoaAnchorC
 
       uint8_t idA = tdoaStorageGetId(anchorACtx);
       uint8_t idB = tdoaStorageGetId(anchorBCtx);
+      addToLogTDOA3(idA, idB, distanceDiff);
       if (idA == stats->anchorId && idB == stats->remoteAnchorId) {
         stats->tdoa = distanceDiff;
       }
@@ -197,7 +208,16 @@ void tdoaEngineProcessPacket(tdoaEngineState_t* engineState, tdoaAnchorContext_t
 }
 
 LOG_GROUP_START(uwbTdoa)
+  LOG_ADD(LOG_FLOAT, diff01, &tdoaLog[0][1])
+  LOG_ADD(LOG_FLOAT, diff02, &tdoaLog[0][2])
+  LOG_ADD(LOG_FLOAT, diff03, &tdoaLog[0][3])
+  LOG_ADD(LOG_FLOAT, diff12, &tdoaLog[1][2])
+  LOG_ADD(LOG_FLOAT, diff13, &tdoaLog[1][3])
+  LOG_ADD(LOG_FLOAT, diff23, &tdoaLog[2][3])
+LOG_GROUP_STOP(uwbTdoa)
+
+LOG_GROUP_START(uwbTdoa2)
   LOG_ADD(LOG_UINT8, a0id, &tdoa_anchorID_0)
   LOG_ADD(LOG_UINT8, a1id, &tdoa_anchorID_1)
   LOG_ADD(LOG_FLOAT, distDiff, &tdoa_distDiff)
-LOG_GROUP_STOP(uwbTdoa)
+LOG_GROUP_STOP(uwbTdoa2)
