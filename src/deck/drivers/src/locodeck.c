@@ -61,26 +61,42 @@
 #define CS_PIN DECK_GPIO_IO1
 
 // LOCO deck alternative IRQ and RESET pins(IO_2, IO_3) instead of default (RX1, TX1), leaving UART1 free for use
-#ifdef LOCODECK_USE_ALT_PINS
-  #define GPIO_PIN_IRQ 	  DECK_GPIO_IO2
 
-  #ifndef LOCODECK_ALT_PIN_RESET
-  #define GPIO_PIN_RESET 	DECK_GPIO_IO3
-  #else
-  #define GPIO_PIN_RESET 	LOCODECK_ALT_PIN_RESET
-  #endif
+#define GPIO_PIN_IRQ_ALT	  DECK_GPIO_IO2
 
-  #define EXTI_PortSource EXTI_PortSourceGPIOB
-  #define EXTI_PinSource 	EXTI_PinSource5
-  #define EXTI_LineN 		  EXTI_Line5
-#else
-  #define GPIO_PIN_IRQ 	  DECK_GPIO_RX1
-  #define GPIO_PIN_RESET 	DECK_GPIO_TX1
-  #define EXTI_PortSource EXTI_PortSourceGPIOC
-  #define EXTI_PinSource 	EXTI_PinSource11
-  #define EXTI_LineN 		  EXTI_Line11
-#endif
+#define GPIO_PIN_RESET_ALT 	DECK_GPIO_IO3
 
+#define EXTI_PortSource_ALT EXTI_PortSourceGPIOB
+#define EXTI_PinSource_ALT 	EXTI_PinSource5
+#define EXTI_LineN_ALT 		  EXTI_Line5
+
+#define GPIO_PIN_IRQ 	  DECK_GPIO_RX1
+#define GPIO_PIN_RESET 	DECK_GPIO_TX1
+#define EXTI_PortSource EXTI_PortSourceGPIOC
+#define EXTI_PinSource 	EXTI_PinSource11
+#define EXTI_LineN 		  EXTI_Line11
+
+//#define LOCODECK_USE_ALT_PINS 1
+//
+//#ifdef LOCODECK_USE_ALT_PINS
+//  #define GPIO_PIN_IRQ 	  DECK_GPIO_IO2
+//
+//  #ifndef LOCODECK_ALT_PIN_RESET
+//  #define GPIO_PIN_RESET 	DECK_GPIO_IO3
+//  #else
+//  #define GPIO_PIN_RESET 	LOCODECK_ALT_PIN_RESET
+//  #endif
+//
+//  #define EXTI_PortSource EXTI_PortSourceGPIOB
+//  #define EXTI_PinSource 	EXTI_PinSource5
+//  #define EXTI_LineN 		  EXTI_Line5
+//#else
+//  #define GPIO_PIN_IRQ 	  DECK_GPIO_RX1
+//  #define GPIO_PIN_RESET 	DECK_GPIO_TX1
+//  #define EXTI_PortSource EXTI_PortSourceGPIOC
+//  #define EXTI_PinSource 	EXTI_PinSource11
+//  #define EXTI_LineN 		  EXTI_Line11
+//#endif
 
 #define DEFAULT_RX_TIMEOUT 10000
 
@@ -126,9 +142,13 @@ static uwbAlgorithm_t *algorithm = &uwbTwrTagAlgorithm;
 
 static bool isInit = false;
 static TaskHandle_t uwbTaskHandle = 0;
+static TaskHandle_t uwbTaskHandle_alt = 0;
 static SemaphoreHandle_t algoSemaphore;
 static dwDevice_t dwm_device;
 static dwDevice_t *dwm = &dwm_device;
+
+static dwDevice_t dwm_device_alt;
+static dwDevice_t *dwm_alt = &dwm_device_alt;
 
 static QueueHandle_t lppShortQueue;
 
@@ -370,6 +390,32 @@ static void uwbTask(void* parameters) {
   }
 }
 
+static void uwbTask_alt(void* parameters) {
+  lppShortQueue = xQueueCreate(10, sizeof(lpsLppShortPacket_t));
+
+  algoOptions.currentRangingMode = lpsMode_auto;
+
+  systemWaitStart();
+
+  while(1) {
+    xSemaphoreTake(algoSemaphore, portMAX_DELAY);
+    handleModeSwitch();
+    xSemaphoreGive(algoSemaphore);
+
+    if (ulTaskNotifyTake(pdTRUE, timeout / portTICK_PERIOD_MS) > 0) {
+      do{
+        xSemaphoreTake(algoSemaphore, portMAX_DELAY);
+        dwHandleInterrupt(dwm_alt);
+        xSemaphoreGive(algoSemaphore);
+      } while(digitalRead(GPIO_PIN_IRQ_ALT) != 0);
+    } else {
+      xSemaphoreTake(algoSemaphore, portMAX_DELAY);
+      timeout = algorithm->onEvent(dwm_alt, eventTimeout);
+      xSemaphoreGive(algoSemaphore);
+    }
+  }
+}
+
 static lpsLppShortPacket_t lppShortPacket;
 
 bool lpsSendLppShort(uint8_t destId, void* data, size_t length)
@@ -424,11 +470,19 @@ static void spiRead(dwDevice_t* dev, const void *header, size_t headerLength,
   STATS_CNT_RATE_EVENT(&spiReadCount);
 }
 
-#if LOCODECK_USE_ALT_PINS
-  void __attribute__((used)) EXTI5_Callback(void)
-#else
-  void __attribute__((used)) EXTI11_Callback(void)
-#endif
+void __attribute__((used)) EXTI5_Callback(void)
+  {
+    portBASE_TYPE  xHigherPriorityTaskWoken = pdFALSE;
+
+    // Unlock interrupt handling task
+    vTaskNotifyGiveFromISR(uwbTaskHandle_alt, &xHigherPriorityTaskWoken);
+
+    if(xHigherPriorityTaskWoken) {
+      portYIELD();
+    }
+  }
+
+void __attribute__((used)) EXTI11_Callback(void)
   {
     portBASE_TYPE  xHigherPriorityTaskWoken = pdFALSE;
 
@@ -545,6 +599,85 @@ static void dwm1000Init(DeckInfo *info)
   isInit = true;
 }
 
+static void dwm1000Init_alt_pins(DeckInfo *info)
+{
+  EXTI_InitTypeDef EXTI_InitStructure;
+
+  spiBegin();
+
+  // Set up interrupt
+  SYSCFG_EXTILineConfig(EXTI_PortSource_ALT, EXTI_PinSource_ALT); // both alt
+
+  EXTI_InitStructure.EXTI_Line = EXTI_LineN_ALT; // alt
+  EXTI_InitStructure.EXTI_Mode = EXTI_Mode_Interrupt;
+  EXTI_InitStructure.EXTI_Trigger = EXTI_Trigger_Rising;
+  EXTI_InitStructure.EXTI_LineCmd = ENABLE;
+  EXTI_Init(&EXTI_InitStructure);
+
+  // Init pins
+  pinMode(CS_PIN, OUTPUT);
+  pinMode(GPIO_PIN_RESET_ALT, OUTPUT); //alt
+  pinMode(GPIO_PIN_IRQ_ALT, INPUT); // alt
+
+  // Reset the DW1000 chip
+  digitalWrite(GPIO_PIN_RESET_ALT, 0); //alt
+  vTaskDelay(M2T(10));
+  digitalWrite(GPIO_PIN_RESET_ALT, 1); //alt
+  vTaskDelay(M2T(10));
+
+  // Initialize the driver
+  dwInit(dwm_alt, &dwOps);       // Init libdw
+
+  int result = dwConfigure(dwm_alt);
+  if (result != 0) {
+    isInit = false;
+    DEBUG_PRINT("Failed to configure DW1000!\r\n");
+    return;
+  }
+
+  dwEnableAllLeds(dwm_alt);
+
+  dwTime_t delay = {.full = 0};
+  dwSetAntenaDelay(dwm_alt, delay);
+
+  dwAttachSentHandler(dwm_alt, txCallback);
+  dwAttachReceivedHandler(dwm_alt, rxCallback);
+  dwAttachReceiveTimeoutHandler(dwm_alt, rxTimeoutCallback);
+
+  dwNewConfiguration(dwm_alt);
+  dwSetDefaults(dwm_alt);
+
+
+  #ifdef LPS_LONGER_RANGE
+  dwEnableMode(dwm_alt, MODE_SHORTDATA_MID_ACCURACY);
+  #else
+  dwEnableMode(dwm_alt, MODE_SHORTDATA_FAST_ACCURACY);
+  #endif
+
+  dwSetChannel(dwm_alt, CHANNEL_2);
+  dwSetPreambleCode(dwm_alt, PREAMBLE_CODE_64MHZ_9);
+
+  #ifdef LPS_FULL_TX_POWER
+  dwUseSmartPower(dwm_alt, false);
+  dwSetTxPower(dwm_alt, 0x1F1F1F1Ful);
+  #else
+  dwUseSmartPower(dwm_alt, true);
+  #endif
+
+  dwSetReceiveWaitTimeout(dwm_alt, DEFAULT_RX_TIMEOUT);
+
+  dwCommitConfiguration(dwm_alt);
+
+  memoryRegisterHandler(&memDef);
+
+  algoSemaphore= xSemaphoreCreateMutex();
+
+  xTaskCreate(uwbTask_alt, LPS_DECK_TASK_NAME, 3 * configMINIMAL_STACK_SIZE, NULL,
+                    LPS_DECK_TASK_PRI, &uwbTaskHandle_alt);
+
+  isInit = true;
+}
+
 uint16_t locoDeckGetRangingState() {
   return algoOptions.rangingState;
 }
@@ -580,7 +713,26 @@ static const DeckDriver dwm1000_deck = {
   .test = dwm1000Test,
 };
 
+static const DeckDriver dwm1000_deck_alt_pins = {
+  .vid = 0xBC,
+  .pid = 0xA6,
+  .name = "bcDWM1000_alt_pins",
+
+  .usedGpio = 0,  // FIXME: set the used pins
+  .requiredEstimator = kalmanEstimator,
+  #ifdef LOCODECK_NO_LOW_INTERFERENCE
+  .requiredLowInterferenceRadioMode = false,
+  #else
+  .requiredLowInterferenceRadioMode = true,
+  #endif
+
+  .init = dwm1000Init_alt_pins,
+  .test = dwm1000Test,
+};
+
 DECK_DRIVER(dwm1000_deck);
+
+DECK_DRIVER(dwm1000_deck_alt_pins);
 
 PARAM_GROUP_START(deck)
 

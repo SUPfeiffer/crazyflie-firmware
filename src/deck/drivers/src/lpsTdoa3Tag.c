@@ -175,7 +175,7 @@ static void rxcallback(dwDevice_t *dev) {
   dwTime_t arrival = {.full = 0};
   dwGetReceiveTimestamp(dev, &arrival);
   const int64_t rxAn_by_T_in_cl_T = arrival.full;
-
+  DEBUG_PRINT("%08x", (unsigned int) arrival.low32);
   const rangePacket3_t* packet = (rangePacket3_t*)rxPacket.payload;
   if (packet->header.type == PACKET_TYPE_TDOA3) {
     const int64_t txAn_in_cl_An = packet->header.txTimeStamp;;
@@ -294,6 +294,7 @@ static uint8_t getActiveAnchorIdList(uint8_t unorderedAnchorList[], const int ma
 }
 
 static void Initialize(dwDevice_t *dev) {
+  DEBUG_PRINT("TDOA3 initialize \r\n");
   uint32_t now_ms = T2M(xTaskGetTickCount());
   tdoaEngineInit(&tdoaEngineState, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmRandom);
 
