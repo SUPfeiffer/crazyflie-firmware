@@ -94,7 +94,7 @@ typedef struct {
 
 
 // Outgoing LPP packet
-static lpsLppShortPacket_t lppPacket;
+//static lpsLppShortPacket_t lppPacket;
 
 static bool rangingOk;
 
@@ -175,7 +175,6 @@ static void rxcallback(dwDevice_t *dev) {
   dwTime_t arrival = {.full = 0};
   dwGetReceiveTimestamp(dev, &arrival);
   const int64_t rxAn_by_T_in_cl_T = arrival.full;
-  DEBUG_PRINT("%08x", (unsigned int) arrival.low32);
   const rangePacket3_t* packet = (rangePacket3_t*)rxPacket.payload;
   if (packet->header.type == PACKET_TYPE_TDOA3) {
     const int64_t txAn_in_cl_An = packet->header.txTimeStamp;;
@@ -189,7 +188,7 @@ static void rxcallback(dwDevice_t *dev) {
     tdoaEngineProcessPacket(&tdoaEngineState, &anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T);
     tdoaStorageSetRxTxData(&anchorCtx, rxAn_by_T_in_cl_T, txAn_in_cl_An, seqNr);
     handleLppPacket(dataLength, rangeDataLength, &rxPacket, &anchorCtx);
-
+    DEBUG_PRINT("%08x %08x", (unsigned int) packet->header.txTimeStamp, (unsigned int) arrival.low32);
     rangingOk = true;
   }
 }
@@ -200,38 +199,39 @@ static void setRadioInReceiveMode(dwDevice_t *dev) {
   dwStartReceive(dev);
 }
 
-static void sendLppShort(dwDevice_t *dev, lpsLppShortPacket_t *packet)
-{
-  static packet_t txPacket;
-  dwIdle(dev);
+//static void sendLppShort(dwDevice_t *dev, lpsLppShortPacket_t *packet)
+//{
+//  static packet_t txPacket;
+//  dwIdle(dev);
+//
+//  MAC80215_PACKET_INIT(txPacket, MAC802154_TYPE_DATA);
+//
+//  txPacket.payload[LPS_TDOA3_TYPE] = LPP_HEADER_SHORT_PACKET;
+//  memcpy(&txPacket.payload[LPS_TDOA3_SEND_LPP_PAYLOAD], packet->data, packet->length);
+//
+//  txPacket.pan = 0xbccf;
+//  txPacket.sourceAddress = 0xbccf000000000000 | 0xff;
+//  txPacket.destAddress = 0xbccf000000000000 | packet->dest;
+//
+//  dwNewTransmit(dev);
+//  dwSetDefaults(dev);
+//  dwSetData(dev, (uint8_t*)&txPacket, MAC802154_HEADER_LENGTH+1+packet->length);
+//
+//  dwStartTransmit(dev);
+//}
 
-  MAC80215_PACKET_INIT(txPacket, MAC802154_TYPE_DATA);
-
-  txPacket.payload[LPS_TDOA3_TYPE] = LPP_HEADER_SHORT_PACKET;
-  memcpy(&txPacket.payload[LPS_TDOA3_SEND_LPP_PAYLOAD], packet->data, packet->length);
-
-  txPacket.pan = 0xbccf;
-  txPacket.sourceAddress = 0xbccf000000000000 | 0xff;
-  txPacket.destAddress = 0xbccf000000000000 | packet->dest;
-
-  dwNewTransmit(dev);
-  dwSetDefaults(dev);
-  dwSetData(dev, (uint8_t*)&txPacket, MAC802154_HEADER_LENGTH+1+packet->length);
-
-  dwStartTransmit(dev);
-}
-
-static bool sendLpp(dwDevice_t *dev) {
-  bool lppPacketToSend = lpsGetLppShort(&lppPacket);
-  if (lppPacketToSend) {
-    sendLppShort(dev, &lppPacket);
-    return true;
-  }
-
-  return false;
-}
+//static bool sendLpp(dwDevice_t *dev) {
+//  bool lppPacketToSend = lpsGetLppShort(&lppPacket);
+//  if (lppPacketToSend) {
+//    sendLppShort(dev, &lppPacket);
+//    return true;
+//  }
+//
+//  return false;
+//}
 
 static uint32_t onEvent(dwDevice_t *dev, uwbEvent_t event) {
+  //DEBUG_PRINT("onevent \r\n");
   switch(event) {
     case eventPacketReceived:
       rxcallback(dev);
@@ -247,12 +247,13 @@ static uint32_t onEvent(dwDevice_t *dev, uwbEvent_t event) {
       ASSERT_FAILED();
   }
 
-  if(!sendLpp(dev)) {
-    setRadioInReceiveMode(dev);
-  }
-
+//  if(!sendLpp(dev)) {
+//    setRadioInReceiveMode(dev);
+//  }
+  setRadioInReceiveMode(dev);
   uint32_t now_ms = T2M(xTaskGetTickCount());
   tdoaStatsUpdate(&tdoaEngineState.stats, now_ms);
+  //DEBUG_PRINT("stats update \r\n");
 
   return MAX_TIMEOUT;
 }
@@ -294,7 +295,6 @@ static uint8_t getActiveAnchorIdList(uint8_t unorderedAnchorList[], const int ma
 }
 
 static void Initialize(dwDevice_t *dev) {
-  DEBUG_PRINT("TDOA3 initialize \r\n");
   uint32_t now_ms = T2M(xTaskGetTickCount());
   tdoaEngineInit(&tdoaEngineState, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmRandom);
 

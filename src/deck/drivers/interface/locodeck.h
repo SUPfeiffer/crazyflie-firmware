@@ -84,8 +84,11 @@ typedef struct {
 } lpsAlgoOptions_t;
 
 bool locoDeckGetAnchorPosition(const uint8_t anchorId, point_t* position);
+bool locoDeckGetAnchorPosition_alt(const uint8_t anchorId, point_t* position);
 uint8_t locoDeckGetAnchorIdList(uint8_t unorderedAnchorList[], const int maxListSize);
+uint8_t locoDeckGetAnchorIdList_alt(uint8_t unorderedAnchorList[], const int maxListSize);
 uint8_t locoDeckGetActiveAnchorIdList(uint8_t unorderedAnchorList[], const int maxListSize);
+uint8_t locoDeckGetActiveAnchorIdList_alt(uint8_t unorderedAnchorList[], const int maxListSize);
 
 // Callbacks for uwb algorithms
 typedef struct uwbAlgorithm_s {
@@ -104,6 +107,7 @@ typedef struct uwbAlgorithm_s {
 // Send a short configuration packet to the LPS system
 // Returns true if packet will be send, false instead
 bool lpsSendLppShort(uint8_t destId, void* data, size_t length);
+//bool lpsSendLppShort_alt(uint8_t destId, void* data, size_t length);
 
 typedef struct {
   uint8_t dest;
