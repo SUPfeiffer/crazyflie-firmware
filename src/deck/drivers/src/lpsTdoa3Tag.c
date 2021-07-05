@@ -46,6 +46,7 @@ The implementation must handle
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "semphr.h"
 
 #include "lpsTdoa3Tag.h"
 #include "tdoaEngineInstance.h"
@@ -66,6 +67,9 @@ The implementation must handle
 #define PACKET_TYPE_TDOA3 0x30
 
 #define TDOA3_RECEIVE_TIMEOUT 10000
+
+static SemaphoreHandle_t printSemaphore;
+static bool isPrintSemaphoreCreated = false;
 
 typedef struct {
   uint8_t type;
@@ -102,7 +106,7 @@ static bool isValidTimeStamp(const int64_t anchorRxTime) {
   return anchorRxTime != 0;
 }
 
-static int updateRemoteData(tdoaAnchorContext_t* anchorCtx, const void* payload) {
+static int updateRemoteData(dwDevice_t *dev, tdoaAnchorContext_t* anchorCtx, const void* payload) {
   const rangePacket3_t* packet = (rangePacket3_t*)payload;
   const void* anchorDataPtr = &packet->remoteAnchorData;
   for (uint8_t i = 0; i < packet->header.remoteCount; i++) {
@@ -123,7 +127,12 @@ static int updateRemoteData(tdoaAnchorContext_t* anchorCtx, const void* payload)
         tdoaStorageSetTimeOfFlight(anchorCtx, remoteId, tof);
 
         uint8_t anchorId = tdoaStorageGetId(anchorCtx);
-        tdoaStats_t* stats = &tdoaEngineState.stats;
+        tdoaStats_t* stats;
+        if(dev->alternative_deck){
+          stats = &tdoaEngineState_alt.stats;
+        } else {
+          stats = &tdoaEngineState.stats;
+        }
         if (anchorId == stats->anchorId && remoteId == stats->remoteAnchorId) {
           stats->tof = (uint16_t)tof;
         }
@@ -163,7 +172,12 @@ static void handleLppPacket(const int dataLength, int rangePacketLength, const p
 }
 
 static void rxcallback(dwDevice_t *dev) {
-  tdoaStats_t* stats = &tdoaEngineState.stats;
+  tdoaStats_t* stats;
+  if(dev->alternative_deck){
+    stats = &tdoaEngineState_alt.stats;
+  } else {
+    stats = &tdoaEngineState.stats;
+  }
   STATS_CNT_RATE_EVENT(&stats->packetsReceived);
 
   int dataLength = dwGetDataLength(dev);
@@ -176,19 +190,36 @@ static void rxcallback(dwDevice_t *dev) {
   dwGetReceiveTimestamp(dev, &arrival);
   const int64_t rxAn_by_T_in_cl_T = arrival.full;
   const rangePacket3_t* packet = (rangePacket3_t*)rxPacket.payload;
+
+  if (!isPrintSemaphoreCreated){
+    printSemaphore = xSemaphoreCreateMutex();
+    DEBUG_PRINT("printsemaphore initialised \r\n");
+    isPrintSemaphoreCreated = true;
+  }
+
   if (packet->header.type == PACKET_TYPE_TDOA3) {
     const int64_t txAn_in_cl_An = packet->header.txTimeStamp;;
     const uint8_t seqNr = packet->header.seq & 0x7f;;
 
     tdoaAnchorContext_t anchorCtx;
     uint32_t now_ms = T2M(xTaskGetTickCount());
+    if(dev->alternative_deck){
+      tdoaEngineGetAnchorCtxForPacketProcessing(&tdoaEngineState_alt, anchorId, now_ms, &anchorCtx);
+    } else {
+      tdoaEngineGetAnchorCtxForPacketProcessing(&tdoaEngineState, anchorId, now_ms, &anchorCtx);
+    }
+    int rangeDataLength = updateRemoteData(dev, &anchorCtx, packet);
 
-    tdoaEngineGetAnchorCtxForPacketProcessing(&tdoaEngineState, anchorId, now_ms, &anchorCtx);
-    int rangeDataLength = updateRemoteData(&anchorCtx, packet);
-    tdoaEngineProcessPacket(&tdoaEngineState, &anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T);
+    if(dev->alternative_deck){
+      tdoaEngineProcessPacket(&tdoaEngineState_alt, &anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T);
+    } else {
+      tdoaEngineProcessPacket(&tdoaEngineState, &anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T);
+    }
     tdoaStorageSetRxTxData(&anchorCtx, rxAn_by_T_in_cl_T, txAn_in_cl_An, seqNr);
     handleLppPacket(dataLength, rangeDataLength, &rxPacket, &anchorCtx);
-    DEBUG_PRINT("%08x %08x", (unsigned int) packet->header.txTimeStamp, (unsigned int) arrival.low32);
+    xSemaphoreTake(printSemaphore, portMAX_DELAY);
+    //DEBUG_PRINT("%08x %lu, alt deck: %d \r\n", (unsigned int) packet->header.txTimeStamp, (uint32_t) arrival.low32, dev->alternative_deck);
+    xSemaphoreGive(printSemaphore);
     rangingOk = true;
   }
 }
@@ -219,7 +250,7 @@ static void setRadioInReceiveMode(dwDevice_t *dev) {
 //
 //  dwStartTransmit(dev);
 //}
-
+//
 //static bool sendLpp(dwDevice_t *dev) {
 //  bool lppPacketToSend = lpsGetLppShort(&lppPacket);
 //  if (lppPacketToSend) {
@@ -252,7 +283,12 @@ static uint32_t onEvent(dwDevice_t *dev, uwbEvent_t event) {
 //  }
   setRadioInReceiveMode(dev);
   uint32_t now_ms = T2M(xTaskGetTickCount());
-  tdoaStatsUpdate(&tdoaEngineState.stats, now_ms);
+  if(dev->alternative_deck){
+    tdoaStatsUpdate(&tdoaEngineState_alt.stats, now_ms);
+  } else {
+    tdoaStatsUpdate(&tdoaEngineState.stats, now_ms);
+  }
+
   //DEBUG_PRINT("stats update \r\n");
 
   return MAX_TIMEOUT;
@@ -276,7 +312,26 @@ static bool getAnchorPosition(const uint8_t anchorId, point_t* position) {
   tdoaAnchorContext_t anchorCtx;
   uint32_t now_ms = T2M(xTaskGetTickCount());
 
-  bool contextFound = tdoaStorageGetAnchorCtx(tdoaEngineState.anchorInfoArray, anchorId, now_ms, &anchorCtx);
+  bool contextFound;
+
+  contextFound = tdoaStorageGetAnchorCtx(tdoaEngineState.anchorInfoArray, anchorId, now_ms, &anchorCtx);
+
+  if (contextFound) {
+    tdoaStorageGetAnchorPosition(&anchorCtx, position);
+    return true;
+  }
+
+  return false;
+}
+
+static bool getAnchorPosition_alt(const uint8_t anchorId, point_t* position) {
+  tdoaAnchorContext_t anchorCtx;
+  uint32_t now_ms = T2M(xTaskGetTickCount());
+
+  bool contextFound;
+  contextFound = tdoaStorageGetAnchorCtx(tdoaEngineState_alt.anchorInfoArray, anchorId, now_ms, &anchorCtx);
+
+
   if (contextFound) {
     tdoaStorageGetAnchorPosition(&anchorCtx, position);
     return true;
@@ -289,14 +344,27 @@ static uint8_t getAnchorIdList(uint8_t unorderedAnchorList[], const int maxListS
   return tdoaStorageGetListOfAnchorIds(tdoaEngineState.anchorInfoArray, unorderedAnchorList, maxListSize);
 }
 
+static uint8_t getAnchorIdList_alt(uint8_t unorderedAnchorList[], const int maxListSize) {
+  return tdoaStorageGetListOfAnchorIds(tdoaEngineState_alt.anchorInfoArray, unorderedAnchorList, maxListSize);
+}
+
 static uint8_t getActiveAnchorIdList(uint8_t unorderedAnchorList[], const int maxListSize) {
   uint32_t now_ms = T2M(xTaskGetTickCount());
   return tdoaStorageGetListOfActiveAnchorIds(tdoaEngineState.anchorInfoArray, unorderedAnchorList, maxListSize, now_ms);
 }
 
+static uint8_t getActiveAnchorIdList_alt(uint8_t unorderedAnchorList[], const int maxListSize) {
+  uint32_t now_ms = T2M(xTaskGetTickCount());
+  return tdoaStorageGetListOfActiveAnchorIds(tdoaEngineState_alt.anchorInfoArray, unorderedAnchorList, maxListSize, now_ms);
+}
+
 static void Initialize(dwDevice_t *dev) {
   uint32_t now_ms = T2M(xTaskGetTickCount());
-  tdoaEngineInit(&tdoaEngineState, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmRandom);
+  if(dev->alternative_deck){
+    tdoaEngineInit(&tdoaEngineState_alt, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmRandom);
+  } else {
+    tdoaEngineInit(&tdoaEngineState, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmRandom);
+  }
 
   #ifdef LPS_2D_POSITION_HEIGHT
   DEBUG_PRINT("2D positioning enabled at %f m height\n", LPS_2D_POSITION_HEIGHT);
@@ -321,4 +389,13 @@ uwbAlgorithm_t uwbTdoa3TagAlgorithm = {
   .getAnchorPosition = getAnchorPosition,
   .getAnchorIdList = getAnchorIdList,
   .getActiveAnchorIdList = getActiveAnchorIdList,
+};
+
+uwbAlgorithm_t uwbTdoa3TagAlgorithm_alt = {
+  .init = Initialize,
+  .onEvent = onEvent,
+  .isRangingOk = isRangingOk,
+  .getAnchorPosition = getAnchorPosition_alt,
+  .getAnchorIdList = getAnchorIdList_alt,
+  .getActiveAnchorIdList = getActiveAnchorIdList_alt,
 };

@@ -130,7 +130,8 @@ struct {
 } algorithmsList[LPS_NUMBER_OF_ALGORITHMS + 1] = {
   //[lpsMode_TWR] = {.algorithm = &uwbTwrTagAlgorithm, .name="TWR"},
   //[lpsMode_TDoA2] = {.algorithm = &uwbTdoa2TagAlgorithm, .name="TDoA2"},
-  [lpsMode_TDoA3] = {.algorithm = &uwbTdoa3TagAlgorithm, .name="TDoA3"}
+  [lpsMode_TDoA3] = {.algorithm = &uwbTdoa3TagAlgorithm, .name="TDoA3"},
+  [lpsMode_TDoA3_alt] = {.algorithm = &uwbTdoa3TagAlgorithm_alt, .name="TDoA3_alt"}
 };
 
 static uwbAlgorithm_t *algorithm = &uwbTdoa3TagAlgorithm;

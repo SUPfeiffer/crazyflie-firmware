@@ -67,7 +67,7 @@ void tdoaEngineInit(tdoaEngineState_t* engineState, const uint32_t now_ms, tdoaE
 
 static void enqueueTDOA(const tdoaAnchorContext_t* anchorACtx, const tdoaAnchorContext_t* anchorBCtx, double distanceDiff, tdoaEngineState_t* engineState) {
   tdoaStats_t* stats = &engineState->stats;
-
+  DEBUG_PRINT("enqueue tdoa reached \r\n");
   tdoaMeasurement_t tdoa = {
     .stdDev = MEASUREMENT_NOISE_STD,
     .distanceDiff = distanceDiff
@@ -86,6 +86,8 @@ static void enqueueTDOA(const tdoaAnchorContext_t* anchorACtx, const tdoaAnchorC
     }
     tdoa.anchorIds[0] = idA;
     tdoa.anchorIds[1] = idB;
+
+    DEBUG_PRINT("alt pins: %d, tdoa: %f", engineState->alternative_deck, distanceDiff);
 
     engineState->sendTdoaToEstimator(&tdoa);
   }
@@ -196,6 +198,7 @@ static bool findSuitableAnchor(tdoaEngineState_t* engineState, tdoaAnchorContext
   bool result = false;
 
   if (tdoaStorageGetClockCorrection(anchorCtx) > 0.0) {
+    DEBUG_PRINT("get clock correction \r\n");
     switch(engineState->matchingAlgorithm) {
       case TdoaEngineMatchingAlgorithmRandom:
         result = matchRandomAnchor(engineState, otherAnchorCtx, anchorCtx, doExcludeId, excludedId);
@@ -206,6 +209,7 @@ static bool findSuitableAnchor(tdoaEngineState_t* engineState, tdoaAnchorContext
         break;
 
       default:
+        DEBUG_PRINT("default \r\n");
         // Do nothing
         break;
     }
@@ -229,10 +233,12 @@ void tdoaEngineProcessPacket(tdoaEngineState_t* engineState, tdoaAnchorContext_t
 void tdoaEngineProcessPacketFiltered(tdoaEngineState_t* engineState, tdoaAnchorContext_t* anchorCtx, const int64_t txAn_in_cl_An, const int64_t rxAn_by_T_in_cl_T, const bool doExcludeId, const uint8_t excludedId) {
   bool timeIsGood = updateClockCorrection(anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T, &engineState->stats);
   if (timeIsGood) {
+
     STATS_CNT_RATE_EVENT(&engineState->stats.timeIsGood);
 
     tdoaAnchorContext_t otherAnchorCtx;
     if (findSuitableAnchor(engineState, &otherAnchorCtx, anchorCtx, doExcludeId, excludedId)) {
+      DEBUG_PRINT("found suitable anchor \r\n");
       STATS_CNT_RATE_EVENT(&engineState->stats.suitableDataFound);
       double tdoaDistDiff = calcDistanceDiff(&otherAnchorCtx, anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T, engineState->locodeckTsFreq);
       enqueueTDOA(&otherAnchorCtx, anchorCtx, tdoaDistDiff, engineState);

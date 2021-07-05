@@ -31,3 +31,4 @@
 #include "tdoaEngine.h"
 
 extern tdoaEngineState_t tdoaEngineState;
+extern tdoaEngineState_t tdoaEngineState_alt;

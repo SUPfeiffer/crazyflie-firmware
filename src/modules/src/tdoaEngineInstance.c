@@ -30,7 +30,11 @@
 #include "param.h"
 #include "static_mem.h"
 
-NO_DMA_CCM_SAFE_ZERO_INIT tdoaEngineState_t tdoaEngineState;
+NO_DMA_CCM_SAFE_ZERO_INIT tdoaEngineState_t tdoaEngineState = {.alternative_deck = true};
+NO_DMA_CCM_SAFE_ZERO_INIT tdoaEngineState_t tdoaEngineState_alt = {.alternative_deck = false};
+
+//tdoaEngineState.alternative_deck = false;
+//tdoaEngineState_alt.alternative_deck = true;
 
 /**
  * Log group for the TDoA engine module.

@@ -85,8 +85,8 @@
 
 static lpsAlgoOptions_t algoOptions = {
   // .userRequestedMode is the wanted algorithm, available as a parameter
-  .userRequestedMode = lpsMode_TDoA3,
-  .currentRangingMode = lpsMode_TDoA3,
+  .userRequestedMode = lpsMode_TDoA3_alt,
+  .currentRangingMode = lpsMode_TDoA3_alt,
   .modeAutoSearchActive = true,
   .modeAutoSearchDoInitialize = true,
 };
@@ -95,10 +95,11 @@ struct {
   uwbAlgorithm_t *algorithm;
   char *name;
 } algorithmsList_alt[LPS_NUMBER_OF_ALGORITHMS + 1] = {
-  [lpsMode_TDoA3] = {.algorithm = &uwbTdoa3TagAlgorithm, .name="TDoA3"}
+  [lpsMode_TDoA3] = {.algorithm = &uwbTdoa3TagAlgorithm, .name="TDoA3"},
+  [lpsMode_TDoA3_alt] = {.algorithm = &uwbTdoa3TagAlgorithm_alt, .name="TDoA3_alt"}
 };
 
-static uwbAlgorithm_t *algorithm = &uwbTdoa3TagAlgorithm;
+static uwbAlgorithm_t *algorithm = &uwbTdoa3TagAlgorithm_alt;
 
 static bool isInit = false;
 static TaskHandle_t uwbTaskHandle_alt = 0;
@@ -266,7 +267,7 @@ static bool switchToMode(const lpsMode_t newMode, bool* tdoa3init) {
   algorithm = algorithmsList_alt[algoOptions.currentRangingMode].algorithm;
   if (!tdoa3init){
     DEBUG_PRINT("TDOA3 initialize \r\n");
-    //algorithm->init(dwm);
+    algorithm->init(dwm);
     *tdoa3init = true;
   }
   //timeout = algorithm->onEvent(dwm, eventTimeout);
@@ -280,7 +281,7 @@ static bool switchToMode(const lpsMode_t newMode, bool* tdoa3init) {
 static void uwbTask(void* parameters) {
   lppShortQueue = xQueueCreate(10, sizeof(lpsLppShortPacket_t));
 
-  algoOptions.currentRangingMode = lpsMode_TDoA3;
+  algoOptions.currentRangingMode = lpsMode_TDoA3_alt;
   systemWaitStart();
 
   bool tdoa3init = false;
@@ -288,7 +289,7 @@ static void uwbTask(void* parameters) {
   while(1) {
     xSemaphoreTake(algoSemaphore, portMAX_DELAY);
     //handleModeSwitch();
-    switchToMode(lpsMode_TDoA3, &tdoa3init);
+    switchToMode(lpsMode_TDoA3_alt, &tdoa3init);
     xSemaphoreGive(algoSemaphore);
 
     if (ulTaskNotifyTake(pdTRUE, timeout / portTICK_PERIOD_MS) > 0) {

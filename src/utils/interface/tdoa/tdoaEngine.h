@@ -21,6 +21,7 @@ typedef struct {
   tdoaEngineSendTdoaToEstimator sendTdoaToEstimator;
   double locodeckTsFreq;
   tdoaEngineMatchingAlgorithm_t matchingAlgorithm;
+  bool alternative_deck;
 
   // Matching algorithm data
   struct {
