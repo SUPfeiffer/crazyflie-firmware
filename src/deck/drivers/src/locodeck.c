@@ -301,7 +301,7 @@ static bool switchToMode(const lpsMode_t newMode, bool* tdoa3init) {
 
   algoOptions.currentRangingMode = newMode;
   algorithm = algorithmsList[algoOptions.currentRangingMode].algorithm;
-  if (!tdoa3init){
+  if (!*tdoa3init){
     algorithm->init(dwm);
     *tdoa3init = true;
   }
