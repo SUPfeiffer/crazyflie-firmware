@@ -48,6 +48,7 @@ The implementation must handle
 #define DEBUG_MODULE "TDOA_ENGINE"
 #include "debug.h"
 
+#include "console.h"
 #include "tdoaEngine.h"
 #include "tdoaStats.h"
 #include "clockCorrectionEngine.h"
@@ -61,13 +62,12 @@ void tdoaEngineInit(tdoaEngineState_t* engineState, const uint32_t now_ms, tdoaE
   engineState->sendTdoaToEstimator = sendTdoaToEstimator;
   engineState->locodeckTsFreq = locodeckTsFreq;
   engineState->matchingAlgorithm = matchingAlgorithm;
-
+  DEBUG_PRINT("tdoa engine init %d",engineState->alternative_deck);
   engineState->matching.offset = 0;
 }
 
 static void enqueueTDOA(const tdoaAnchorContext_t* anchorACtx, const tdoaAnchorContext_t* anchorBCtx, double distanceDiff, tdoaEngineState_t* engineState) {
   tdoaStats_t* stats = &engineState->stats;
-  DEBUG_PRINT("enqueue tdoa reached \r\n");
   tdoaMeasurement_t tdoa = {
     .stdDev = MEASUREMENT_NOISE_STD,
     .distanceDiff = distanceDiff
@@ -86,8 +86,10 @@ static void enqueueTDOA(const tdoaAnchorContext_t* anchorACtx, const tdoaAnchorC
     }
     tdoa.anchorIds[0] = idA;
     tdoa.anchorIds[1] = idB;
-
-    DEBUG_PRINT("alt pins: %d, tdoa: %f", engineState->alternative_deck, distanceDiff);
+    //DEBUG_PRINT("seq_nrA : %d, seq_nrB : %d", (unsigned int) anchorACtx->anchorInfo->seqNr, (unsigned int) anchorBCtx->anchorInfo->seqNr );
+    //consolePrintf("seq_nrA : %d, seq_nrB : %d", (unsigned int) anchorACtx->anchorInfo->seqNr, (unsigned int) anchorBCtx->anchorInfo->seqNr);
+    //DEBUG_PRINT("time: %d, seg_nr : %d, tx: %08x, rx: %08x", (unsigned int) anchorACtx->currentTime_ms, (unsigned int) anchorACtx->anchorInfo->seqNr, (unsigned int) anchorACtx->anchorInfo->txTime, (unsigned int) anchorACtx->anchorInfo->rxTime );
+    consolePrintf("> alt pins: %d, tdoa: %f, idA: %d, idB: %d ) \r\n", engineState->alternative_deck, distanceDiff, idA, idB);
 
     engineState->sendTdoaToEstimator(&tdoa);
   }
@@ -198,7 +200,6 @@ static bool findSuitableAnchor(tdoaEngineState_t* engineState, tdoaAnchorContext
   bool result = false;
 
   if (tdoaStorageGetClockCorrection(anchorCtx) > 0.0) {
-    DEBUG_PRINT("get clock correction \r\n");
     switch(engineState->matchingAlgorithm) {
       case TdoaEngineMatchingAlgorithmRandom:
         result = matchRandomAnchor(engineState, otherAnchorCtx, anchorCtx, doExcludeId, excludedId);
@@ -209,7 +210,6 @@ static bool findSuitableAnchor(tdoaEngineState_t* engineState, tdoaAnchorContext
         break;
 
       default:
-        DEBUG_PRINT("default \r\n");
         // Do nothing
         break;
     }
@@ -238,7 +238,6 @@ void tdoaEngineProcessPacketFiltered(tdoaEngineState_t* engineState, tdoaAnchorC
 
     tdoaAnchorContext_t otherAnchorCtx;
     if (findSuitableAnchor(engineState, &otherAnchorCtx, anchorCtx, doExcludeId, excludedId)) {
-      DEBUG_PRINT("found suitable anchor \r\n");
       STATS_CNT_RATE_EVENT(&engineState->stats.suitableDataFound);
       double tdoaDistDiff = calcDistanceDiff(&otherAnchorCtx, anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T, engineState->locodeckTsFreq);
       enqueueTDOA(&otherAnchorCtx, anchorCtx, tdoaDistDiff, engineState);

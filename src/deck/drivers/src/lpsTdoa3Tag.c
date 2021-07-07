@@ -55,6 +55,7 @@ The implementation must handle
 
 #include "libdw1000.h"
 #include "mac.h"
+#include "console.h"
 
 #define DEBUG_MODULE "TDOA3"
 #include "debug.h"
@@ -193,7 +194,7 @@ static void rxcallback(dwDevice_t *dev) {
 
   if (!isPrintSemaphoreCreated){
     printSemaphore = xSemaphoreCreateMutex();
-    DEBUG_PRINT("printsemaphore initialised \r\n");
+    //DEBUG_PRINT("printsemaphore initialised \r\n");
     isPrintSemaphoreCreated = true;
   }
 
@@ -210,6 +211,9 @@ static void rxcallback(dwDevice_t *dev) {
     }
     int rangeDataLength = updateRemoteData(dev, &anchorCtx, packet);
 
+    uint32_t cf_clock = xTaskGetTickCount();
+    consolePrintf("(%d, %08x, %08x, %d, <", (unsigned int) cf_clock, (unsigned int) packet->header.txTimeStamp, (unsigned int) arrival.low32, seqNr);
+
     if(dev->alternative_deck){
       tdoaEngineProcessPacket(&tdoaEngineState_alt, &anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T);
     } else {
@@ -218,7 +222,6 @@ static void rxcallback(dwDevice_t *dev) {
     tdoaStorageSetRxTxData(&anchorCtx, rxAn_by_T_in_cl_T, txAn_in_cl_An, seqNr);
     handleLppPacket(dataLength, rangeDataLength, &rxPacket, &anchorCtx);
     xSemaphoreTake(printSemaphore, portMAX_DELAY);
-    //DEBUG_PRINT("%08x %lu, alt deck: %d \r\n", (unsigned int) packet->header.txTimeStamp, (uint32_t) arrival.low32, dev->alternative_deck);
     xSemaphoreGive(printSemaphore);
     rangingOk = true;
   }
@@ -360,9 +363,12 @@ static uint8_t getActiveAnchorIdList_alt(uint8_t unorderedAnchorList[], const in
 
 static void Initialize(dwDevice_t *dev) {
   uint32_t now_ms = T2M(xTaskGetTickCount());
+  DEBUG_PRINT("alt deck %d \r\n",dev->alternative_deck);
   if(dev->alternative_deck){
+    tdoaEngineState_alt.alternative_deck = true;
     tdoaEngineInit(&tdoaEngineState_alt, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmRandom);
   } else {
+      tdoaEngineState.alternative_deck = false;
     tdoaEngineInit(&tdoaEngineState, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmRandom);
   }
 

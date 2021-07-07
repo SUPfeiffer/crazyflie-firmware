@@ -265,7 +265,7 @@ static bool switchToMode(const lpsMode_t newMode, bool* tdoa3init) {
 
   algoOptions.currentRangingMode = newMode;
   algorithm = algorithmsList_alt[algoOptions.currentRangingMode].algorithm;
-  if (!tdoa3init){
+  if (!*tdoa3init){
     DEBUG_PRINT("TDOA3 initialize \r\n");
     algorithm->init(dwm);
     *tdoa3init = true;
@@ -436,6 +436,8 @@ static void dwm1000Init_alt_pins(DeckInfo *info)
     return;
   }
 
+  dwm->alternative_deck = true;
+
   dwEnableAllLeds(dwm);
 
   dwTime_t delay = {.full = 0};
@@ -468,8 +470,6 @@ static void dwm1000Init_alt_pins(DeckInfo *info)
   dwSetReceiveWaitTimeout(dwm, DEFAULT_RX_TIMEOUT);
 
   dwCommitConfiguration(dwm);
-
-  dwm->alternative_deck = true;
 
   memoryRegisterHandler(&memDef_alt);
 

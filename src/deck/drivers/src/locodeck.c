@@ -301,7 +301,7 @@ static bool switchToMode(const lpsMode_t newMode, bool* tdoa3init) {
 
   algoOptions.currentRangingMode = newMode;
   algorithm = algorithmsList[algoOptions.currentRangingMode].algorithm;
-  if (!tdoa3init){
+  if (!*tdoa3init){
     algorithm->init(dwm);
     *tdoa3init = true;
   }
@@ -563,6 +563,8 @@ static void dwm1000Init(DeckInfo *info)
     return;
   }
 
+  dwm->alternative_deck = false;
+
   dwEnableAllLeds(dwm);
 
   dwTime_t delay = {.full = 0};
@@ -591,6 +593,7 @@ static void dwm1000Init(DeckInfo *info)
   #else
   dwUseSmartPower(dwm, true);
   #endif
+
 
   dwSetReceiveWaitTimeout(dwm, DEFAULT_RX_TIMEOUT);
 
