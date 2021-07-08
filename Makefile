@@ -209,6 +209,7 @@ PROJ_OBJ += usddeck.o
 PROJ_OBJ += zranger.o zranger2.o
 PROJ_OBJ += locodeck_alt_pins.o
 PROJ_OBJ += locodeck.o
+PROJ_OBJ += tagsync.o
 PROJ_OBJ += clockCorrectionEngine.o
 #PROJ_OBJ += lpsTwrTag.o
 #PROJ_OBJ += lpsTdoa2Tag.o

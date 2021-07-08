@@ -56,6 +56,7 @@ The implementation must handle
 #include "libdw1000.h"
 #include "mac.h"
 #include "console.h"
+#include "tagsync.h"
 
 #define DEBUG_MODULE "TDOA3"
 #include "debug.h"
@@ -66,6 +67,7 @@ The implementation must handle
 #define LPS_TDOA3_SEND_LPP_PAYLOAD 1
 
 #define PACKET_TYPE_TDOA3 0x30
+#define PACKET_TYPE_SYNC 0x33
 
 #define TDOA3_RECEIVE_TIMEOUT 10000
 
@@ -97,7 +99,7 @@ typedef struct {
   uint8_t remoteAnchorData;
 } __attribute__((packed)) rangePacket3_t;
 
-
+sync_t sync;
 // Outgoing LPP packet
 //static lpsLppShortPacket_t lppPacket;
 
@@ -225,6 +227,20 @@ static void rxcallback(dwDevice_t *dev) {
     xSemaphoreGive(printSemaphore);
     rangingOk = true;
   }
+  else if (packet->header.type == PACKET_TYPE_SYNC){
+    if (dev->alternative_deck){
+      sync.pollPacket = sync.latestPacket;
+      sync.pollPacketRx = sync.latestPacketRx;
+
+      sync.latestPacket = packet->header.txTimeStamp;
+      sync.latestPacketRx = arrival.low32;
+
+    } else {
+      sync.answerPacket = packet->header.txTimeStamp;
+      sync.answerPacketRx = arrival.low32;
+    }
+  }
+
 }
 
 static void setRadioInReceiveMode(dwDevice_t *dev) {
