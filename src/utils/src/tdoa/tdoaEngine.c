@@ -89,7 +89,7 @@ static void enqueueTDOA(const tdoaAnchorContext_t* anchorACtx, const tdoaAnchorC
     //DEBUG_PRINT("seq_nrA : %d, seq_nrB : %d", (unsigned int) anchorACtx->anchorInfo->seqNr, (unsigned int) anchorBCtx->anchorInfo->seqNr );
     //consolePrintf("seq_nrA : %d, seq_nrB : %d", (unsigned int) anchorACtx->anchorInfo->seqNr, (unsigned int) anchorBCtx->anchorInfo->seqNr);
     //DEBUG_PRINT("time: %d, seg_nr : %d, tx: %08x, rx: %08x", (unsigned int) anchorACtx->currentTime_ms, (unsigned int) anchorACtx->anchorInfo->seqNr, (unsigned int) anchorACtx->anchorInfo->txTime, (unsigned int) anchorACtx->anchorInfo->rxTime );
-    consolePrintf("> alt pins: %d, tdoa: %f, idA: %d, idB: %d ) \r\n", engineState->alternative_deck, distanceDiff, idA, idB);
+    //consolePrintf("> alt pins: %d, tdoa: %f, idA: %d, idB: %d ) \r\n", engineState->alternative_deck, distanceDiff, idA, idB);
 
     engineState->sendTdoaToEstimator(&tdoa);
   }

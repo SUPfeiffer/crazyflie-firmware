@@ -4,6 +4,6 @@
 #include "locodeck.h"
 
 extern uwbAlgorithm_t uwbTdoa3TagAlgorithm;
-extern uwbAlgorithm_t uwbTdoa3TagAlgorithm_alt;
+extern uwbAlgorithm_t uwbTdoa3TagAlgorithm_2tag;
 
 #endif // __LPS_TDOA3_TAG_H__

@@ -131,14 +131,13 @@ bool memTest(void) {
 }
 
 void memoryRegisterHandler(const MemoryHandlerDef_t* handlerDef){
-//  for (int i = 0; i < nrOfHandlers; i++) {
-//    ASSERT(handlerDef->type != handlers[i]->type);
-//  }
+  for (int i = 0; i < nrOfHandlers; i++) {
+    ASSERT(handlerDef->type != handlers[i]->type);
+  }
   ASSERT(nrOfHandlers < MAX_NR_HANDLERS);
   ASSERT(registrationEnabled);
   handlers[nrOfHandlers] = handlerDef;
   nrOfHandlers++;
-  DEBUG_PRINT("mem reg handler finished");
 }
 
 void memoryRegisterOwHandler(const MemoryOwHandlerDef_t* handlerDef){
