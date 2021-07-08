@@ -174,7 +174,7 @@ static void sendLppShort(dwDevice_t *dev, lpsLppShortPacket_t *packet)
 }
 
 static bool rxcallback(dwDevice_t *dev) {
-  tdoaStats_t* stats = &tdoaEngineState.stats;
+  tdoaStats_t* stats = &tdoaEngineState_t1.stats;
   STATS_CNT_RATE_EVENT(&stats->packetsReceived);
 
   int dataLength = dwGetDataLength(dev);
@@ -204,9 +204,9 @@ static bool rxcallback(dwDevice_t *dev) {
       const uint8_t seqNr = packet->sequenceNrs[anchor] & 0x7f;
 
       tdoaAnchorContext_t anchorCtx;
-      tdoaEngineGetAnchorCtxForPacketProcessing(&tdoaEngineState, anchor, now_ms, &anchorCtx);
+      tdoaEngineGetAnchorCtxForPacketProcessing(&tdoaEngineState_t1, anchor, now_ms, &anchorCtx);
       updateRemoteData(&anchorCtx, packet);
-      tdoaEngineProcessPacket(&tdoaEngineState, &anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T);
+      tdoaEngineProcessPacket(&tdoaEngineState_t1, &anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T);
       tdoaStorageSetRxTxData(&anchorCtx, rxAn_by_T_in_cl_T, txAn_in_cl_An, seqNr);
 
       logClockCorrection[anchor] = tdoaStorageGetClockCorrection(&anchorCtx);
@@ -297,7 +297,7 @@ static void sendTdoaToEstimatorCallback(tdoaMeasurement_t* tdoaMeasurement) {
 
 static void Initialize(dwDevice_t *dev) {
   uint32_t now_ms = T2M(xTaskGetTickCount());
-  tdoaEngineInit(&tdoaEngineState, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmYoungest);
+  tdoaEngineInit(&tdoaEngineState_t1, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmYoungest);
 
   previousAnchor = 0;
 
@@ -320,7 +320,7 @@ static bool getAnchorPosition(const uint8_t anchorId, point_t* position) {
   tdoaAnchorContext_t anchorCtx;
   uint32_t now_ms = T2M(xTaskGetTickCount());
 
-  bool contextFound = tdoaStorageGetAnchorCtx(tdoaEngineState.anchorInfoArray, anchorId, now_ms, &anchorCtx);
+  bool contextFound = tdoaStorageGetAnchorCtx(tdoaEngineState_t1.anchorInfoArray, anchorId, now_ms, &anchorCtx);
   if (contextFound) {
     tdoaStorageGetAnchorPosition(&anchorCtx, position);
     return true;
@@ -330,12 +330,12 @@ static bool getAnchorPosition(const uint8_t anchorId, point_t* position) {
 }
 
 static uint8_t getAnchorIdList(uint8_t unorderedAnchorList[], const int maxListSize) {
-  return tdoaStorageGetListOfAnchorIds(tdoaEngineState.anchorInfoArray, unorderedAnchorList, maxListSize);
+  return tdoaStorageGetListOfAnchorIds(tdoaEngineState_t1.anchorInfoArray, unorderedAnchorList, maxListSize);
 }
 
 static uint8_t getActiveAnchorIdList(uint8_t unorderedAnchorList[], const int maxListSize) {
   uint32_t now_ms = T2M(xTaskGetTickCount());
-  return tdoaStorageGetListOfActiveAnchorIds(tdoaEngineState.anchorInfoArray, unorderedAnchorList, maxListSize, now_ms);
+  return tdoaStorageGetListOfActiveAnchorIds(tdoaEngineState_t1.anchorInfoArray, unorderedAnchorList, maxListSize, now_ms);
 }
 
 // Loco Posisioning Protocol (LPP) handling

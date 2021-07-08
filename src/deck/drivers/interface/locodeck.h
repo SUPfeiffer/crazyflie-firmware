@@ -66,7 +66,7 @@ typedef enum {
   lpsMode_TWR = 1,
   lpsMode_TDoA2 = 2,
   lpsMode_TDoA3 = 3,
-  lpsMode_TDoA3_alt = 4,
+//  lpsMode_TDoA3_2tag = 4,
 } lpsMode_t;
 
 typedef struct {
@@ -85,11 +85,11 @@ typedef struct {
 } lpsAlgoOptions_t;
 
 bool locoDeckGetAnchorPosition(const uint8_t anchorId, point_t* position);
-bool locoDeckGetAnchorPosition_alt(const uint8_t anchorId, point_t* position);
+//bool locoDeckGetAnchorPosition_alt(const uint8_t anchorId, point_t* position);
 uint8_t locoDeckGetAnchorIdList(uint8_t unorderedAnchorList[], const int maxListSize);
-uint8_t locoDeckGetAnchorIdList_alt(uint8_t unorderedAnchorList[], const int maxListSize);
+//uint8_t locoDeckGetAnchorIdList_alt(uint8_t unorderedAnchorList[], const int maxListSize);
 uint8_t locoDeckGetActiveAnchorIdList(uint8_t unorderedAnchorList[], const int maxListSize);
-uint8_t locoDeckGetActiveAnchorIdList_alt(uint8_t unorderedAnchorList[], const int maxListSize);
+//uint8_t locoDeckGetActiveAnchorIdList_alt(uint8_t unorderedAnchorList[], const int maxListSize);
 
 // Callbacks for uwb algorithms
 typedef struct uwbAlgorithm_s {

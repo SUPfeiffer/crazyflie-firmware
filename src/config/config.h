@@ -65,6 +65,10 @@
   #define portGET_RUN_TIME_COUNTER_VALUE() usecTimestamp()
 #endif
 
+#ifdef LOCODECK_USE_DOUBLE_DECK
+  #define configTASK_NOTIFICATION_ARRAY_ENTRIES    2
+#endif
+
 
 // Task priorities. Higher number higher priority
 #define STABILIZER_TASK_PRI     5

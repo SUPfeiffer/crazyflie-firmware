@@ -99,11 +99,28 @@ typedef struct {
   uint8_t remoteAnchorData;
 } __attribute__((packed)) rangePacket3_t;
 
-sync_t sync;
-// Outgoing LPP packet
-//static lpsLppShortPacket_t lppPacket;
 
+sync_t sync;
+
+typedef struct {
+  uint8_t tagID;
+  uint8_t seqNr;
+  uint32_t cf_clk;
+  uint32_t tx_timestamp;
+  uint32_t rx_timestamp;
+} __attribute__((packed)) packetInfo_t;
+
+static packetInfo_t packetInfo;
+
+// Outgoing LPP packet
+static lpsLppShortPacket_t lppPacket;
+
+static bool tag1isInit = false;
+static bool tag2isInit = false;
 static bool rangingOk;
+static bool tag1rangingOk;
+static bool tag2rangingOk;
+
 
 static bool isValidTimeStamp(const int64_t anchorRxTime) {
   return anchorRxTime != 0;
@@ -132,9 +149,9 @@ static int updateRemoteData(dwDevice_t *dev, tdoaAnchorContext_t* anchorCtx, con
         uint8_t anchorId = tdoaStorageGetId(anchorCtx);
         tdoaStats_t* stats;
         if(dev->alternative_deck){
-          stats = &tdoaEngineState_alt.stats;
+          stats = &tdoaEngineState_t2.stats;
         } else {
-          stats = &tdoaEngineState.stats;
+          stats = &tdoaEngineState_t1.stats;
         }
         if (anchorId == stats->anchorId && remoteId == stats->remoteAnchorId) {
           stats->tof = (uint16_t)tof;
@@ -175,12 +192,16 @@ static void handleLppPacket(const int dataLength, int rangePacketLength, const p
 }
 
 static void rxcallback(dwDevice_t *dev) {
+  tdoaEngineState_t* engine;
   tdoaStats_t* stats;
   if(dev->alternative_deck){
-    stats = &tdoaEngineState_alt.stats;
+    engine = &tdoaEngineState_t2;
+    stats = &tdoaEngineState_t2.stats;
   } else {
-    stats = &tdoaEngineState.stats;
+    engine = &tdoaEngineState_t1;
+    stats = &tdoaEngineState_t1.stats;
   }
+
   STATS_CNT_RATE_EVENT(&stats->packetsReceived);
 
   int dataLength = dwGetDataLength(dev);
@@ -206,21 +227,24 @@ static void rxcallback(dwDevice_t *dev) {
 
     tdoaAnchorContext_t anchorCtx;
     uint32_t now_ms = T2M(xTaskGetTickCount());
-    if(dev->alternative_deck){
-      tdoaEngineGetAnchorCtxForPacketProcessing(&tdoaEngineState_alt, anchorId, now_ms, &anchorCtx);
-    } else {
-      tdoaEngineGetAnchorCtxForPacketProcessing(&tdoaEngineState, anchorId, now_ms, &anchorCtx);
-    }
+    tdoaEngineGetAnchorCtxForPacketProcessing(engine, anchorId, now_ms, &anchorCtx);
+
     int rangeDataLength = updateRemoteData(dev, &anchorCtx, packet);
 
-    uint32_t cf_clock = xTaskGetTickCount();
-    consolePrintf("(%d, %08x, %08x, %d, <", (unsigned int) cf_clock, (unsigned int) packet->header.txTimeStamp, (unsigned int) arrival.low32, seqNr);
-
-    if(dev->alternative_deck){
-      tdoaEngineProcessPacket(&tdoaEngineState_alt, &anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T);
-    } else {
-      tdoaEngineProcessPacket(&tdoaEngineState, &anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T);
+    packetInfo.cf_clk = now_ms;
+    packetInfo.seqNr = seqNr;
+    packetInfo.tx_timestamp = (unsigned int) packet->header.txTimeStamp;
+    packetInfo.rx_timestamp = (unsigned int) arrival.low32;
+    if (dev->alternative_deck){
+      packetInfo.tagID = 2;
+    } else{
+      packetInfo.tagID = 1;
     }
+
+    //consolePrintf("(%d, %08x, %08x, %d, <", (unsigned int) cf_clock, (unsigned int) packet->header.txTimeStamp, (unsigned int) arrival.low32, seqNr);
+
+    tdoaEngineProcessPacket(engine, &anchorCtx, txAn_in_cl_An, rxAn_by_T_in_cl_T);
+
     tdoaStorageSetRxTxData(&anchorCtx, rxAn_by_T_in_cl_T, txAn_in_cl_An, seqNr);
     handleLppPacket(dataLength, rangeDataLength, &rxPacket, &anchorCtx);
     xSemaphoreTake(printSemaphore, portMAX_DELAY);
@@ -249,36 +273,36 @@ static void setRadioInReceiveMode(dwDevice_t *dev) {
   dwStartReceive(dev);
 }
 
-//static void sendLppShort(dwDevice_t *dev, lpsLppShortPacket_t *packet)
-//{
-//  static packet_t txPacket;
-//  dwIdle(dev);
-//
-//  MAC80215_PACKET_INIT(txPacket, MAC802154_TYPE_DATA);
-//
-//  txPacket.payload[LPS_TDOA3_TYPE] = LPP_HEADER_SHORT_PACKET;
-//  memcpy(&txPacket.payload[LPS_TDOA3_SEND_LPP_PAYLOAD], packet->data, packet->length);
-//
-//  txPacket.pan = 0xbccf;
-//  txPacket.sourceAddress = 0xbccf000000000000 | 0xff;
-//  txPacket.destAddress = 0xbccf000000000000 | packet->dest;
-//
-//  dwNewTransmit(dev);
-//  dwSetDefaults(dev);
-//  dwSetData(dev, (uint8_t*)&txPacket, MAC802154_HEADER_LENGTH+1+packet->length);
-//
-//  dwStartTransmit(dev);
-//}
-//
-//static bool sendLpp(dwDevice_t *dev) {
-//  bool lppPacketToSend = lpsGetLppShort(&lppPacket);
-//  if (lppPacketToSend) {
-//    sendLppShort(dev, &lppPacket);
-//    return true;
-//  }
-//
-//  return false;
-//}
+static void sendLppShort(dwDevice_t *dev, lpsLppShortPacket_t *packet)
+{
+  static packet_t txPacket;
+  dwIdle(dev);
+
+  MAC80215_PACKET_INIT(txPacket, MAC802154_TYPE_DATA);
+
+  txPacket.payload[LPS_TDOA3_TYPE] = LPP_HEADER_SHORT_PACKET;
+  memcpy(&txPacket.payload[LPS_TDOA3_SEND_LPP_PAYLOAD], packet->data, packet->length);
+
+  txPacket.pan = 0xbccf;
+  txPacket.sourceAddress = 0xbccf000000000000 | 0xff;
+  txPacket.destAddress = 0xbccf000000000000 | packet->dest;
+
+  dwNewTransmit(dev);
+  dwSetDefaults(dev);
+  dwSetData(dev, (uint8_t*)&txPacket, MAC802154_HEADER_LENGTH+1+packet->length);
+
+  dwStartTransmit(dev);
+}
+
+static bool sendLpp(dwDevice_t *dev) {
+  bool lppPacketToSend = lpsGetLppShort(&lppPacket);
+  if (lppPacketToSend) {
+    sendLppShort(dev, &lppPacket);
+    return true;
+  }
+
+  return false;
+}
 
 static uint32_t onEvent(dwDevice_t *dev, uwbEvent_t event) {
   //DEBUG_PRINT("onevent \r\n");
@@ -297,15 +321,15 @@ static uint32_t onEvent(dwDevice_t *dev, uwbEvent_t event) {
       ASSERT_FAILED();
   }
 
-//  if(!sendLpp(dev)) {
-//    setRadioInReceiveMode(dev);
-//  }
-  setRadioInReceiveMode(dev);
+  if(!sendLpp(dev)) {
+    setRadioInReceiveMode(dev);
+  }
+
   uint32_t now_ms = T2M(xTaskGetTickCount());
   if(dev->alternative_deck){
-    tdoaStatsUpdate(&tdoaEngineState_alt.stats, now_ms);
+    tdoaStatsUpdate(&tdoaEngineState_t2.stats, now_ms);
   } else {
-    tdoaStatsUpdate(&tdoaEngineState.stats, now_ms);
+    tdoaStatsUpdate(&tdoaEngineState_t1.stats, now_ms);
   }
 
   //DEBUG_PRINT("stats update \r\n");
@@ -315,6 +339,13 @@ static uint32_t onEvent(dwDevice_t *dev, uwbEvent_t event) {
 
 static void sendTdoaToEstimatorCallback(tdoaMeasurement_t* tdoaMeasurement) {
   estimatorEnqueueTDOA(tdoaMeasurement);
+  consolePrintf("tCF %lu; tag %d; seqNR: %d; tx %lu; rx %lu; idA %d; idB %d; tdoa %f\n",
+    packetInfo.cf_clk, packetInfo.tagID, packetInfo.seqNr, packetInfo.tx_timestamp, packetInfo.rx_timestamp,
+    tdoaMeasurement->anchorIds[0], tdoaMeasurement->anchorIds[1], (double) tdoaMeasurement->distanceDiff);
+  //consolePrintf("(%d, %08x, %08x, %d, <", (unsigned int) cf_clock, (unsigned int) packet->header.txTimeStamp, (unsigned int) arrival.low32, seqNr);
+
+  //consolePrintf("> alt pins: %d, tdoa: %f, idA: %d, idB: %d ) \r\n", engineState->alternative_deck, distanceDiff, idA, idB);
+
 
   #ifdef LPS_2D_POSITION_HEIGHT
   // If LPS_2D_POSITION_HEIGHT is defined we assume that we are doing 2D positioning.
@@ -332,24 +363,11 @@ static bool getAnchorPosition(const uint8_t anchorId, point_t* position) {
   uint32_t now_ms = T2M(xTaskGetTickCount());
 
   bool contextFound;
-
-  contextFound = tdoaStorageGetAnchorCtx(tdoaEngineState.anchorInfoArray, anchorId, now_ms, &anchorCtx);
-
-  if (contextFound) {
-    tdoaStorageGetAnchorPosition(&anchorCtx, position);
-    return true;
+  if (tag1isInit){
+    contextFound = tdoaStorageGetAnchorCtx(tdoaEngineState_t1.anchorInfoArray, anchorId, now_ms, &anchorCtx);
+  }else{
+    contextFound = tdoaStorageGetAnchorCtx(tdoaEngineState_t2.anchorInfoArray, anchorId, now_ms, &anchorCtx);
   }
-
-  return false;
-}
-
-static bool getAnchorPosition_alt(const uint8_t anchorId, point_t* position) {
-  tdoaAnchorContext_t anchorCtx;
-  uint32_t now_ms = T2M(xTaskGetTickCount());
-
-  bool contextFound;
-  contextFound = tdoaStorageGetAnchorCtx(tdoaEngineState_alt.anchorInfoArray, anchorId, now_ms, &anchorCtx);
-
 
   if (contextFound) {
     tdoaStorageGetAnchorPosition(&anchorCtx, position);
@@ -360,32 +378,32 @@ static bool getAnchorPosition_alt(const uint8_t anchorId, point_t* position) {
 }
 
 static uint8_t getAnchorIdList(uint8_t unorderedAnchorList[], const int maxListSize) {
-  return tdoaStorageGetListOfAnchorIds(tdoaEngineState.anchorInfoArray, unorderedAnchorList, maxListSize);
-}
-
-static uint8_t getAnchorIdList_alt(uint8_t unorderedAnchorList[], const int maxListSize) {
-  return tdoaStorageGetListOfAnchorIds(tdoaEngineState_alt.anchorInfoArray, unorderedAnchorList, maxListSize);
+  if (tag1isInit){
+    return tdoaStorageGetListOfAnchorIds(tdoaEngineState_t1.anchorInfoArray, unorderedAnchorList, maxListSize);
+  }else{
+    return tdoaStorageGetListOfAnchorIds(tdoaEngineState_t2.anchorInfoArray, unorderedAnchorList, maxListSize);
+  }
 }
 
 static uint8_t getActiveAnchorIdList(uint8_t unorderedAnchorList[], const int maxListSize) {
   uint32_t now_ms = T2M(xTaskGetTickCount());
-  return tdoaStorageGetListOfActiveAnchorIds(tdoaEngineState.anchorInfoArray, unorderedAnchorList, maxListSize, now_ms);
-}
-
-static uint8_t getActiveAnchorIdList_alt(uint8_t unorderedAnchorList[], const int maxListSize) {
-  uint32_t now_ms = T2M(xTaskGetTickCount());
-  return tdoaStorageGetListOfActiveAnchorIds(tdoaEngineState_alt.anchorInfoArray, unorderedAnchorList, maxListSize, now_ms);
+  if (tag1isInit){
+    return tdoaStorageGetListOfActiveAnchorIds(tdoaEngineState_t1.anchorInfoArray, unorderedAnchorList, maxListSize, now_ms);
+  }else{
+    return tdoaStorageGetListOfActiveAnchorIds(tdoaEngineState_t2.anchorInfoArray, unorderedAnchorList, maxListSize, now_ms);
+  }
 }
 
 static void Initialize(dwDevice_t *dev) {
   uint32_t now_ms = T2M(xTaskGetTickCount());
-  DEBUG_PRINT("alt deck %d \r\n",dev->alternative_deck);
   if(dev->alternative_deck){
-    tdoaEngineState_alt.alternative_deck = true;
-    tdoaEngineInit(&tdoaEngineState_alt, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmRandom);
+    tdoaEngineState_t2.alternative_deck = true;
+    tdoaEngineInit(&tdoaEngineState_t2, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmRandom);
+    tag2isInit = true;
   } else {
-      tdoaEngineState.alternative_deck = false;
-    tdoaEngineInit(&tdoaEngineState, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmRandom);
+    tdoaEngineState_t1.alternative_deck = false;
+    tdoaEngineInit(&tdoaEngineState_t1, now_ms, sendTdoaToEstimatorCallback, LOCODECK_TS_FREQ, TdoaEngineMatchingAlgorithmRandom);
+    tag1isInit = true;
   }
 
   #ifdef LPS_2D_POSITION_HEIGHT
@@ -397,6 +415,8 @@ static void Initialize(dwDevice_t *dev) {
   dwCommitConfiguration(dev);
 
   rangingOk = false;
+  tag1rangingOk = false;
+  tag2rangingOk = false;
 }
 
 static bool isRangingOk()
@@ -413,11 +433,11 @@ uwbAlgorithm_t uwbTdoa3TagAlgorithm = {
   .getActiveAnchorIdList = getActiveAnchorIdList,
 };
 
-uwbAlgorithm_t uwbTdoa3TagAlgorithm_alt = {
-  .init = Initialize,
-  .onEvent = onEvent,
-  .isRangingOk = isRangingOk,
-  .getAnchorPosition = getAnchorPosition_alt,
-  .getAnchorIdList = getAnchorIdList_alt,
-  .getActiveAnchorIdList = getActiveAnchorIdList_alt,
-};
+//uwbAlgorithm_t uwbTdoa3TagAlgorithm_2tag = {
+//  .init = Initialize,
+//  .onEvent = onEvent,
+//  .isRangingOk = isRangingOk,
+//  .getAnchorPosition = getAnchorPosition_alt,
+//  .getAnchorIdList = getAnchorIdList_alt,
+//  .getActiveAnchorIdList = getActiveAnchorIdList_alt,
+//};

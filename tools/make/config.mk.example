@@ -63,6 +63,9 @@
 # For instance useful with Loco + Lighhouse + Flow decks where IO_3 collides with the Flow deck
 # CFLAGS += -DLOCODECK_ALT_PIN_RESET=DECK_GPIO_IO4
 
+## Enable double loco decks
+# CFLAGS += -DLOCODECK_USE_DOUBLE_DECK
+
 ## Disable Low Interference Mode when using Loco Deck
 # CFLAGS += -DLOCODECK_NO_LOW_INTERFERENCE
 

@@ -30,5 +30,5 @@
 
 #include "tdoaEngine.h"
 
-extern tdoaEngineState_t tdoaEngineState;
-extern tdoaEngineState_t tdoaEngineState_alt;
+extern tdoaEngineState_t tdoaEngineState_t1;
+extern tdoaEngineState_t tdoaEngineState_t2;
